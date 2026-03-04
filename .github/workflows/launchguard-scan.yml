@@ -3,8 +3,17 @@ name: LaunchGuard Scan Runner
 on:
   workflow_dispatch:
     inputs:
+      scan_id:
+        description: "Scan ID from LaunchGuard API"
+        required: true
+        type: string
+      site_id:
+        description: "Site ID (for traceability)"
+        required: false
+        default: ""
+        type: string
       client_name:
-        description: "Client slug (matches data/clients/<name>.json)"
+        description: "Client slug used for report folder names"
         required: true
         type: string
       profile:
@@ -15,6 +24,32 @@ on:
         options:
           - client-safe
           - engineering-deep
+      single_url:
+        description: "Optional single URL override"
+        required: false
+        default: ""
+        type: string
+      sitemap_url:
+        description: "Optional sitemap URL"
+        required: false
+        default: ""
+        type: string
+      form_mode:
+        description: "Form submit mode"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - live
+      callback_url:
+        description: "Callback URL (optional override)"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   scan:
@@ -35,14 +70,87 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       - name: Run QA
+        id: run_qa
+        shell: bash
         env:
           QA_PROFILE: ${{ inputs.profile }}
-          FORM_SUBMIT_MODE: dry-run
+          FORM_SUBMIT_MODE: ${{ inputs.form_mode }}
           SCREENSHOTS_MODE: off
-        run: npm run qa -- "${{ inputs.client_name }}" --quick
+        run: |
+          set +e
+          CMD=(npm run qa -- "${{ inputs.client_name }}" --quick)
+          if [[ -n "${{ inputs.single_url }}" ]]; then
+            CMD+=("--single=${{ inputs.single_url }}")
+          fi
+          if [[ -n "${{ inputs.sitemap_url }}" ]]; then
+            CMD+=("--sitemap=${{ inputs.sitemap_url }}")
+          fi
+          echo "Running command: ${CMD[*]}"
+          "${CMD[@]}"
+          EXIT_CODE=$?
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+          exit 0
 
       - name: Upload reports
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: reports-${{ inputs.client_name }}
+          name: reports-${{ inputs.client_name }}-${{ github.run_id }}
           path: reports/${{ inputs.client_name }}/
+          if-no-files-found: warn
+
+      - name: Callback LaunchGuard API
+        if: always()
+        shell: bash
+        env:
+          CALLBACK_SECRET_URL: ${{ secrets.LAUNCHGUARD_CALLBACK_URL }}
+          CALLBACK_SECRET_TOKEN: ${{ secrets.LAUNCHGUARD_CALLBACK_TOKEN }}
+        run: |
+          set +e
+          EXIT_CODE="${{ steps.run_qa.outputs.exit_code }}"
+          if [[ -z "$EXIT_CODE" ]]; then
+            EXIT_CODE="1"
+          fi
+
+          FINAL_STATUS="completed"
+          if [[ "$EXIT_CODE" != "0" ]]; then
+            FINAL_STATUS="failed"
+          fi
+
+          TARGET_URL="$CALLBACK_SECRET_URL"
+          if [[ -n "${{ inputs.callback_url }}" ]]; then
+            TARGET_URL="${{ inputs.callback_url }}"
+          fi
+
+          if [[ -z "$TARGET_URL" || -z "$CALLBACK_SECRET_TOKEN" ]]; then
+            echo "Callback skipped: missing URL or callback token secret."
+            exit 0
+          fi
+
+          WORKFLOW_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          PAYLOAD=$(cat <<JSON
+          {
+            "scan_id": "${{ inputs.scan_id }}",
+            "status": "$FINAL_STATUS",
+            "summary": {
+              "workflow_run_id": "${{ github.run_id }}",
+              "workflow_url": "$WORKFLOW_URL",
+              "workflow_attempt": "${{ github.run_attempt }}",
+              "qa_exit_code": "$EXIT_CODE",
+              "client_name": "${{ inputs.client_name }}",
+              "site_id": "${{ inputs.site_id }}"
+            }
+          }
+JSON
+          )
+
+          curl -fsS -X POST "$TARGET_URL" \
+            -H "content-type: application/json" \
+            -H "x-scan-callback-token: $CALLBACK_SECRET_TOKEN" \
+            --data "$PAYLOAD"
+
+      - name: Fail job if QA failed
+        if: steps.run_qa.outputs.exit_code != '0'
+        run: |
+          echo "QA command exited with code ${{ steps.run_qa.outputs.exit_code }}"
+          exit 1

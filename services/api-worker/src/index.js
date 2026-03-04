@@ -49,9 +49,55 @@ function extractSiteToken(request) {
   return '';
 }
 
+function extractCallbackToken(request) {
+  const headerToken = String(request.headers.get('x-scan-callback-token') || '').trim();
+  if (headerToken) return headerToken;
+
+  const auth = String(request.headers.get('authorization') || '').trim();
+  if (auth.toLowerCase().startsWith('bearer ')) {
+    return auth.slice(7).trim();
+  }
+
+  return '';
+}
+
+function isTerminalScanStatus(status) {
+  return ['completed', 'failed', 'cancelled'].includes(status);
+}
+
+function buildClientName(scanId) {
+  const compact = String(scanId || '').replace(/[^a-z0-9]/gi, '').toLowerCase();
+  return `scan${compact.slice(0, 12) || 'run'}`;
+}
+
+function mapProfileToQaProfile(scanProfile) {
+  const value = String(scanProfile || '').toLowerCase();
+  return value === 'engineering-deep' ? 'engineering-deep' : 'client-safe';
+}
+
+function getGitHubDispatchConfig(env) {
+  const owner = String(env.GITHUB_OWNER || '').trim();
+  const repo = String(env.GITHUB_REPO || '').trim();
+  const workflow = String(env.GITHUB_WORKFLOW_FILE || 'launchguard-scan.yml').trim();
+  const ref = String(env.GITHUB_REF || 'main').trim();
+  const token = String(env.GITHUB_DISPATCH_TOKEN || '').trim();
+  const publicApiBase = String(env.PUBLIC_API_BASE || '').trim();
+
+  return { owner, repo, workflow, ref, token, publicApiBase };
+}
+
 async function parseJson(request) {
   try {
     return await request.json();
+  } catch {
+    return null;
+  }
+}
+
+function safeParseJson(raw) {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
   } catch {
     return null;
   }
@@ -70,6 +116,7 @@ async function ensurePlansSeeded(env) {
   if (Number(existing?.count || 0) > 0) {
     return;
   }
+
   const defaults = getPlanDefaults();
   for (const plan of defaults) {
     await env.DB.prepare(
@@ -78,6 +125,10 @@ async function ensurePlansSeeded(env) {
       .bind(plan.id, plan.scans_limit, plan.sites_limit, plan.whitelabel, nowIso())
       .run();
   }
+}
+
+async function getSiteById(env, siteId) {
+  return env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(siteId).first();
 }
 
 async function authorizeSiteRequest(request, env, siteId) {
@@ -90,16 +141,12 @@ async function authorizeSiteRequest(request, env, siteId) {
     return false;
   }
 
-  const site = await env.DB.prepare('SELECT token_hash FROM sites WHERE id = ?').bind(siteId).first();
+  const site = await getSiteById(env, siteId);
   if (!site || !site.token_hash) {
     return false;
   }
 
   return String(site.token_hash) === siteToken;
-}
-
-async function getSiteById(env, siteId) {
-  return env.DB.prepare('SELECT * FROM sites WHERE id = ?').bind(siteId).first();
 }
 
 async function registerSite(request, env) {
@@ -115,6 +162,7 @@ async function registerSite(request, env) {
   const createdAt = nowIso();
 
   await ensurePlansSeeded(env);
+
   await env.DB.prepare(
     'INSERT INTO tenants (id, name, billing_status, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING'
   )
@@ -385,27 +433,156 @@ async function getPlanLimits(request, env, siteId) {
   });
 }
 
+function mergeSummary(existingSummaryRaw, patch) {
+  const base = safeParseJson(existingSummaryRaw);
+  const baseObject = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
+  return { ...baseObject, ...patch };
+}
+
+async function dispatchScanToGitHub(env, scan, site) {
+  const config = getGitHubDispatchConfig(env);
+  if (!config.owner || !config.repo || !config.workflow || !config.ref || !config.token) {
+    throw new Error('missing_github_dispatch_config');
+  }
+
+  const callbackPath = '/v1/internal/scan-callback';
+  const callbackUrl = config.publicApiBase ? `${config.publicApiBase.replace(/\/+$/, '')}${callbackPath}` : '';
+
+  const payload = {
+    ref: config.ref,
+    inputs: {
+      scan_id: String(scan.id),
+      site_id: String(scan.site_id || ''),
+      client_name: buildClientName(scan.id),
+      profile: mapProfileToQaProfile(scan.profile),
+      single_url: String(site.site_url || ''),
+      sitemap_url: String(scan.sitemap_url || ''),
+      form_mode: String(scan.form_mode || 'dry-run'),
+      callback_url: callbackUrl
+    }
+  };
+
+  const endpoint = `https://api.github.com/repos/${encodeURIComponent(config.owner)}/${encodeURIComponent(config.repo)}/actions/workflows/${encodeURIComponent(config.workflow)}/dispatches`;
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${config.token}`,
+      'x-github-api-version': '2022-11-28',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`github_dispatch_failed:${response.status}:${errorBody.slice(0, 500)}`);
+  }
+
+  return {
+    dispatched_at: nowIso(),
+    repository: `${config.owner}/${config.repo}`,
+    workflow: config.workflow,
+    ref: config.ref,
+    client_name: payload.inputs.client_name,
+    profile: payload.inputs.profile,
+    callback_url: callbackUrl
+  };
+}
+
 async function queueConsumer(batch, env) {
   const timestamp = nowIso();
+
   for (const message of batch.messages) {
     const payload = message.body || {};
-    const scanId = payload.scan_id;
+    const scanId = String(payload.scan_id || '').trim();
+
     if (!scanId) {
+      message.ack();
+      continue;
+    }
+
+    const scan = await env.DB.prepare('SELECT * FROM scans WHERE id = ?').bind(scanId).first();
+    if (!scan) {
+      message.ack();
+      continue;
+    }
+
+    const site = await getSiteById(env, scan.site_id);
+    if (!site) {
+      await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
+        .bind('failed', timestamp, timestamp, JSON.stringify({ error: 'site_not_found_for_scan' }), scanId)
+        .run();
       message.ack();
       continue;
     }
 
     await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ? WHERE id = ?').bind('running', timestamp, scanId).run();
 
-    // Placeholder processing. Week 3 will dispatch scans to GitHub Actions execution workers.
-    await env.DB.prepare(
-      ['UPDATE scans', 'SET status = ?, completed_at = ?, updated_at = ?, summary_json = ?', 'WHERE id = ?'].join(' ')
-    )
-      .bind('completed', timestamp, timestamp, JSON.stringify({ message: 'queued placeholder completed' }), scanId)
-      .run();
+    try {
+      const dispatchMeta = await dispatchScanToGitHub(env, scan, site);
+      const merged = mergeSummary(scan.summary_json, {
+        dispatch: dispatchMeta,
+        queue_message_id: String(message.id || '')
+      });
+
+      await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, summary_json = ? WHERE id = ?')
+        .bind('dispatched', nowIso(), JSON.stringify(merged), scanId)
+        .run();
+    } catch (error) {
+      const merged = mergeSummary(scan.summary_json, {
+        dispatch_error: String(error && error.message ? error.message : error),
+        failed_at: nowIso()
+      });
+      await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
+        .bind('failed', nowIso(), nowIso(), JSON.stringify(merged), scanId)
+        .run();
+    }
 
     message.ack();
   }
+}
+
+async function handleScanCallback(request, env) {
+  const expectedToken = String(env.SCAN_CALLBACK_TOKEN || '').trim();
+  if (!expectedToken) {
+    return json({ error: 'callback_not_configured' }, 503);
+  }
+
+  const providedToken = extractCallbackToken(request);
+  if (!providedToken || providedToken !== expectedToken) {
+    return unauthorized();
+  }
+
+  const body = await parseJson(request);
+  if (!body || !body.scan_id || !body.status) {
+    return badRequest('scan_id and status are required');
+  }
+
+  const scanId = String(body.scan_id).trim();
+  const status = String(body.status).trim().toLowerCase();
+  if (!['running', 'dispatched', 'completed', 'failed', 'cancelled'].includes(status)) {
+    return badRequest('invalid status');
+  }
+
+  const existing = await env.DB.prepare('SELECT * FROM scans WHERE id = ?').bind(scanId).first();
+  if (!existing) {
+    return notFound();
+  }
+
+  const summaryPatch = body.summary && typeof body.summary === 'object' ? body.summary : {};
+  const summary = mergeSummary(existing.summary_json, {
+    callback_received_at: nowIso(),
+    callback_status: status,
+    ...summaryPatch
+  });
+
+  const completedAt = isTerminalScanStatus(status) ? nowIso() : existing.completed_at;
+  await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
+    .bind(status, nowIso(), completedAt || null, JSON.stringify(summary), scanId)
+    .run();
+
+  return json({ ok: true, scan_id: scanId, status });
 }
 
 function extractSiteIdFromPath(pathname, suffix) {
@@ -426,6 +603,10 @@ export default {
 
     if (!env.DB) {
       return json({ error: 'DB binding missing' }, 500);
+    }
+
+    if (request.method === 'POST' && pathname === '/v1/internal/scan-callback') {
+      return handleScanCallback(request, env);
     }
 
     if (request.method === 'POST' && pathname === '/v1/sites/register') {
