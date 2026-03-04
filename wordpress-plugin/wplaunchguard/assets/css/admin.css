@@ -1,0 +1,8 @@
+.wplg-wrap {
+  max-width: 900px;
+}
+
+.wplg-wrap ul {
+  margin-left: 18px;
+  list-style: disc;
+}

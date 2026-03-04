@@ -1047,6 +1047,51 @@ async function generate(clientName) {
         transform: translateY(0);
       }
       #cards{display:grid;gap:12px;transition: opacity .2s ease}
+      .issueFamilyAccordion{
+        border:1px solid var(--border);
+        border-radius:16px;
+        background:#fff;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .issueFamilySummary{
+        list-style:none;
+        cursor:pointer;
+        display:flex;
+        justify-content:space-between;
+        align-items:flex-start;
+        gap:10px;
+        padding:12px 14px;
+        background: linear-gradient(180deg, rgba(15,23,42,.03), rgba(255,255,255,.92));
+      }
+      .issueFamilySummary::-webkit-details-marker{display:none}
+      .issueFamilySummary .title{
+        font-size:14px;
+        font-weight:800;
+        color:var(--text);
+        line-height:1.3;
+      }
+      .issueFamilySummary .meta{
+        margin-top:4px;
+        color:var(--muted);
+        font-size:12px;
+      }
+      .issueFamilySummary .badges{
+        justify-content:flex-end;
+      }
+      .issueFamilyBody{
+        padding: 10px 10px 2px 10px;
+        border-top:1px solid var(--border);
+        display:grid;
+        gap:10px;
+        background: rgba(255,255,255,.92);
+      }
+      body[data-audience="developer"] .issueFamilyAccordion{
+        border-color: rgba(245,158,11,.24);
+      }
+      body[data-audience="developer"] .issueFamilySummary{
+        background: linear-gradient(180deg, rgba(245,158,11,.12), rgba(255,255,255,.95));
+      }
 
       details.card{
         border:1px solid var(--border);
@@ -2605,6 +2650,218 @@ async function generate(clientName) {
           blockedWrap.appendChild(el('div', { class:'muted' }, [document.createTextNode('No blocked samples captured in this run.')]));
         }
 
+        function buildIssueCard(g, cardIndex) {
+          const i = g.issue;
+          const sev = i.Severity || 'info';
+          const isClientAudience = audience === 'client';
+          const isFormIssue = String(i._source || '').toLowerCase() === 'forms';
+          const impactLabel = g.isGlobal
+            ? 'Impact: High'
+            : g.impacted >= Math.max(2, Math.ceil(totalUniqueUrls * 0.3))
+            ? 'Impact: Medium'
+            : 'Impact: Low';
+          const card = el('details', {
+            class: 'card ' + (isClientAudience ? 'card-client' : 'card-developer'),
+            'data-sev': sev
+          });
+          if (!isClientAudience && cardIndex < 3) {
+            card.setAttribute('open', 'open');
+          }
+
+          const hasLighthouseForGroup = results.some((r) => g.urls && g.urls.has(r.url) && r.lighthouseHtmlRel);
+          const badgeNodes = [
+            el('span', { class:'badge sev-'+sev }, [document.createTextNode(sev)]),
+            el('span', { class:'badge' }, [document.createTextNode(g.displayCategory || i.CategoryGroup || i.Category || 'Structure')]),
+            el('span', { class:'badge' }, [document.createTextNode(impactLabel)]),
+            el('span', { class:'badge' }, [document.createTextNode('Affected pages: ' + g.impacted)]),
+            g.isGlobal ? el('span', { class:'badge' }, [document.createTextNode('Global')]) : null,
+            i.WCAG ? el('span', { class:'badge' }, [document.createTextNode(i.WCAG)]) : null,
+            (g.screenshots && g.screenshots.size > 0)
+              ? el('span', { class:'badge' }, [document.createTextNode('Screenshot')])
+              : null,
+            hasLighthouseForGroup ? el('span', { class:'badge' }, [document.createTextNode('Lighthouse')]) : null
+          ];
+          if (!isClientAudience) {
+            badgeNodes.push(
+              el('span', { class:'badge' }, [document.createTextNode('Instances: ' + (g.instances ? g.instances.length : 0))]),
+              i.actionability ? el('span', { class:'badge' }, [document.createTextNode('Actionability: ' + i.actionability)]) : null,
+              i.ownership ? el('span', { class:'badge' }, [document.createTextNode('Ownership: ' + i.ownership)]) : null,
+              i.journeyScope ? el('span', { class:'badge' }, [document.createTextNode('Scope: ' + i.journeyScope)]) : null
+            );
+          }
+          const badges = el('div', { class:'badges' }, badgeNodes.filter(Boolean));
+
+          const summary = el('summary', { class:'cardSummary' }, [
+            el('span', { class:'sevRail' }),
+            el('div', { class:'cardMain' }, [
+              el('div', { class:'cardTitle' }, [document.createTextNode(i.Title || 'Issue')]),
+              el('div', { class:'cardDesc' }, [document.createTextNode(i.Description || '')]),
+              badges
+            ])
+          ]);
+
+          const urls = Array.from(g.urls);
+          const instances = Array.from(g.instances || []);
+          const screenshots = Array.from(g.screenshots || []);
+
+          const affectedList = el('ul', { class:'issueUrlList' }, []);
+          const urlMax = 12;
+          urls.slice(0, urlMax).forEach((u) => {
+            affectedList.appendChild(el('li', null, [document.createTextNode(u)]));
+          });
+          const moreUrlsBtn = urls.length > urlMax
+            ? el('button', { class:'btn', type:'button' }, [document.createTextNode('Show all pages')])
+            : null;
+          const allUrlsBox = el('ul', { class:'issueUrlList', style:'display:none;margin-top:8px' });
+          if (moreUrlsBtn) {
+            urls.forEach((u) => {
+              allUrlsBox.appendChild(el('li', null, [document.createTextNode(u)]));
+            });
+            moreUrlsBtn.addEventListener('click', () => {
+              const isOpen = allUrlsBox.style.display !== 'none';
+              allUrlsBox.style.display = isOpen ? 'none' : 'grid';
+              moreUrlsBtn.textContent = isOpen ? 'Show all pages' : 'Hide all pages';
+            });
+          }
+
+          const instanceList = el('div', { class:'issueInstanceList' }, []);
+          const instanceMax = 12;
+          instances.slice(0, instanceMax).forEach((inst) => {
+            const row = el('div', { class:'issueInstanceRow' }, [
+              el('div', null, [
+                el('div', { class:'elem' }, [document.createTextNode(inst.element || '-')]),
+                el('div', { class:'meta' }, [document.createTextNode(inst.url || '')])
+              ]),
+              inst.url ? el('a', { class:'btn openLink', href: inst.url, target:'_blank', rel:'noopener' }, [document.createTextNode('Open')]) : null
+            ].filter(Boolean));
+            instanceList.appendChild(row);
+          });
+
+          const moreInstancesBtn = instances.length > instanceMax
+            ? el('button', { class:'btn', type:'button' }, [document.createTextNode('Show all instances')])
+            : null;
+          const allInstanceBox = el('div', { style:'display:none;gap:8px;flex-direction:column' });
+          if (moreInstancesBtn) {
+            instances.forEach((inst) => {
+              const row = el('div', { class:'issueInstanceRow' }, [
+                el('div', null, [
+                  el('div', { class:'elem' }, [document.createTextNode(inst.element || '-')]),
+                  el('div', { class:'meta' }, [document.createTextNode(inst.url || '')])
+                ]),
+                inst.url ? el('a', { class:'btn openLink', href: inst.url, target:'_blank', rel:'noopener' }, [document.createTextNode('Open')]) : null
+              ].filter(Boolean));
+              allInstanceBox.appendChild(row);
+            });
+            moreInstancesBtn.addEventListener('click', () => {
+              const isOpen = allInstanceBox.style.display !== 'none';
+              allInstanceBox.style.display = isOpen ? 'none' : 'flex';
+              moreInstancesBtn.textContent = isOpen ? 'Show all instances' : 'Hide all instances';
+            });
+          }
+
+          const lighthouseLink = results.find((r) => g.urls && g.urls.has(r.url) && r.lighthouseHtmlRel);
+          const bodySections = [
+            el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode("What's broken")]),
+              el('div', { class:'muted' }, [document.createTextNode(i.Description || '')])
+            ]),
+            isFormIssue && i.Element ? el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('Form diagnostics')]),
+              isClientAudience
+                ? el('div', { class:'muted' }, [document.createTextNode(i.Element)])
+                : el('pre', { class:'code' }, [document.createTextNode(i.Element)])
+            ]) : null,
+            el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('AI prioritization')]),
+              el('div', { class:'muted' }, [document.createTextNode(aiPrioritization(g))])
+            ]),
+            el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('Affected pages')]),
+              affectedList,
+              moreUrlsBtn || el('div', { class:'muted' }, [document.createTextNode(urls.length ? '' : '-')]),
+              allUrlsBox
+            ].filter(Boolean)),
+            el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('How to fix')]),
+              el('div', { class:'muted' }, [document.createTextNode(i.Recommendation || '')])
+            ]),
+            issueHelp[i.Title] ? el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('Why this matters (WP/Elementor)')]),
+              el('div', { class:'muted' }, [document.createTextNode(issueHelp[i.Title].why || '')]),
+              el('div', { class:'muted', style:'margin-top:6px' }, [document.createTextNode('Where to look: ' + (issueHelp[i.Title].where || ''))]),
+              el('div', { class:'muted', style:'margin-top:6px' }, [document.createTextNode('Fix approach: ' + (issueHelp[i.Title].fix || ''))])
+            ]) : null,
+            el('div', { class:'actions' }, [
+              el('button', { class:'btn', type:'button' }, [document.createTextNode('Copy Issue Details')]),
+              screenshots.length ? el('a', { class:'btn', href: screenshots[0], target:'_blank', rel:'noopener' }, [document.createTextNode('View Screenshot')]) : null,
+              lighthouseLink ? el('a', { class:'btn', href: lighthouseLink.lighthouseHtmlRel, target:'_blank', rel:'noopener' }, [document.createTextNode('View Lighthouse')]) : null,
+              el('a', { class:'btn primary', href: urls[0] || i.URL || '#', target:'_blank', rel:'noopener' }, [document.createTextNode('Open Example Page')])
+            ])
+          ];
+          if (!isClientAudience) {
+            bodySections.splice(3, 0, el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('Affected element')]),
+              el('pre', { class:'code' }, [document.createTextNode(i.Element || '')])
+            ]));
+            bodySections.splice(4, 0, el('div', null, [
+              el('div', { class:'sectionTitle' }, [document.createTextNode('Instances')]),
+              instanceList,
+              moreInstancesBtn || el('div', { class:'muted' }, [document.createTextNode(instances.length ? '' : '-')]),
+              allInstanceBox
+            ].filter(Boolean)));
+          }
+          const body = el('div', { class:'cardBody' }, bodySections);
+
+          const copyBtn = body.querySelector('.actions button');
+          copyBtn.addEventListener('click', async () => {
+            try {
+              await navigator.clipboard.writeText(issueDetailsForCopy(i));
+            } catch {
+              // best-effort
+            }
+          });
+
+          card.appendChild(summary);
+          card.appendChild(body);
+          return card;
+        }
+
+        function buildIssueFamilies(groups) {
+          const families = new Map();
+          groups.forEach((g) => {
+            const issue = g.issue || {};
+            const title = String(issue.Title || 'Issue');
+            const category = String(g.displayCategory || issue.CategoryGroup || issue.Category || 'Structure');
+            const key = category.toLowerCase() + '::' + title.toLowerCase();
+            const existing = families.get(key) || {
+              key,
+              title,
+              category,
+              groups: [],
+              urls: new Set(),
+              maxSeverity: 'info',
+              maxWeight: 0
+            };
+            existing.groups.push(g);
+            (g.urls || []).forEach((u) => existing.urls.add(u));
+            const sev = String(issue.Severity || 'info').toLowerCase();
+            const weight = severityWeight[sev] || 1;
+            if (weight > existing.maxWeight) {
+              existing.maxWeight = weight;
+              existing.maxSeverity = sev;
+            }
+            families.set(key, existing);
+          });
+
+          return Array.from(families.values())
+            .map((family) => ({ ...family, impacted: family.urls.size }))
+            .sort((a, b) =>
+              (b.maxWeight - a.maxWeight) ||
+              (b.groups.length - a.groups.length) ||
+              (b.impacted - a.impacted)
+            );
+        }
+
         function renderCards(){
           const wrap = document.getElementById('cards');
           wrap.innerHTML = '';
@@ -2626,11 +2883,6 @@ async function generate(clientName) {
           });
           if (audience === 'client') {
             filtered = filtered.slice(0, 20);
-          }
-
-          const label = document.getElementById('issueCountLabel');
-          if (label) {
-            label.textContent = '(showing ' + filtered.length + ' of ' + groupsSource.length + ')';
           }
 
           if (!filtered.length && groupsSource.length) {
@@ -2666,180 +2918,41 @@ async function generate(clientName) {
             return;
           }
 
-          filtered.forEach((g, index) => {
-            const i = g.issue;
-            const sev = i.Severity || 'info';
-            const isClientAudience = audience === 'client';
-            const isFormIssue = String(i._source || '').toLowerCase() === 'forms';
-            const impactLabel = g.isGlobal
-              ? 'Impact: High'
-              : g.impacted >= Math.max(2, Math.ceil(totalUniqueUrls * 0.3))
-              ? 'Impact: Medium'
-              : 'Impact: Low';
-            const card = el('details', {
-              class: 'card ' + (isClientAudience ? 'card-client' : 'card-developer'),
-              'data-sev': sev
-            });
-            if (!isClientAudience && index < 3) {
-              card.setAttribute('open', 'open');
-            }
+          const families = buildIssueFamilies(filtered);
+          const label = document.getElementById('issueCountLabel');
+          if (label) {
+            label.textContent = '(showing ' + filtered.length + ' issue groups in ' + families.length + ' accordions)';
+          }
 
-            const hasLighthouseForGroup = results.some((r) => g.urls && g.urls.has(r.url) && r.lighthouseHtmlRel);
-            const badgeNodes = [
-              el('span', { class:'badge sev-'+sev }, [document.createTextNode(sev)]),
-              el('span', { class:'badge' }, [document.createTextNode(g.displayCategory || i.CategoryGroup || i.Category || 'Structure')]),
-              el('span', { class:'badge' }, [document.createTextNode(impactLabel)]),
-              el('span', { class:'badge' }, [document.createTextNode('Affected pages: ' + g.impacted)]),
-              g.isGlobal ? el('span', { class:'badge' }, [document.createTextNode('Global')]) : null,
-              i.WCAG ? el('span', { class:'badge' }, [document.createTextNode(i.WCAG)]) : null,
-              (g.screenshots && g.screenshots.size > 0)
-                ? el('span', { class:'badge' }, [document.createTextNode('Screenshot')])
-                : null,
-              hasLighthouseForGroup ? el('span', { class:'badge' }, [document.createTextNode('Lighthouse')]) : null
-            ];
-            if (!isClientAudience) {
-              badgeNodes.push(
-                el('span', { class:'badge' }, [document.createTextNode('Instances: ' + (g.instances ? g.instances.length : 0))]),
-                i.actionability ? el('span', { class:'badge' }, [document.createTextNode('Actionability: ' + i.actionability)]) : null,
-                i.ownership ? el('span', { class:'badge' }, [document.createTextNode('Ownership: ' + i.ownership)]) : null,
-                i.journeyScope ? el('span', { class:'badge' }, [document.createTextNode('Scope: ' + i.journeyScope)]) : null
-              );
+          let cardIndex = 0;
+          const defaultOpenFamilies = audience === 'developer' ? 5 : 3;
+          families.forEach((family, familyIndex) => {
+            const familyNode = el('details', { class: 'issueFamilyAccordion', 'data-family-key': family.key });
+            if (familyIndex < defaultOpenFamilies) {
+              familyNode.setAttribute('open', 'open');
             }
-            const badges = el('div', { class:'badges' }, badgeNodes.filter(Boolean));
-
-            const summary = el('summary', { class:'cardSummary' }, [
-              el('span', { class:'sevRail' }),
-              el('div', { class:'cardMain' }, [
-                el('div', { class:'cardTitle' }, [document.createTextNode(i.Title || 'Issue')]),
-                el('div', { class:'cardDesc' }, [document.createTextNode(i.Description || '')]),
-                badges
+            const familySummary = el('summary', { class: 'issueFamilySummary' }, [
+              el('div', null, [
+                el('div', { class: 'title' }, [document.createTextNode(family.title)]),
+                el('div', { class: 'meta' }, [
+                  document.createTextNode(family.category + ' • ' + family.groups.length + ' similar issue group' + (family.groups.length === 1 ? '' : 's') + ' • Affected pages: ' + family.impacted)
+                ])
+              ]),
+              el('div', { class: 'badges' }, [
+                el('span', { class: 'badge sev-' + family.maxSeverity }, [document.createTextNode(family.maxSeverity)]),
+                el('span', { class: 'badge' }, [document.createTextNode('Grouped')])
               ])
             ]);
 
-            const urls = Array.from(g.urls);
-            const instances = Array.from(g.instances || []);
-            const screenshots = Array.from(g.screenshots || []);
-
-            const affectedList = el('ul', { class:'issueUrlList' }, []);
-            const urlMax = 12;
-            urls.slice(0, urlMax).forEach((u) => {
-              affectedList.appendChild(el('li', null, [document.createTextNode(u)]));
-            });
-            const moreUrlsBtn = urls.length > urlMax
-              ? el('button', { class:'btn', type:'button' }, [document.createTextNode('Show all pages')])
-              : null;
-            const allUrlsBox = el('ul', { class:'issueUrlList', style:'display:none;margin-top:8px' });
-            if (moreUrlsBtn) {
-              urls.forEach((u) => {
-                allUrlsBox.appendChild(el('li', null, [document.createTextNode(u)]));
-              });
-              moreUrlsBtn.addEventListener('click', () => {
-                const isOpen = allUrlsBox.style.display !== 'none';
-                allUrlsBox.style.display = isOpen ? 'none' : 'grid';
-                moreUrlsBtn.textContent = isOpen ? 'Show all pages' : 'Hide all pages';
-              });
-            }
-
-            const instanceList = el('div', { class:'issueInstanceList' }, []);
-            const instanceMax = 12;
-            instances.slice(0, instanceMax).forEach((inst) => {
-              const row = el('div', { class:'issueInstanceRow' }, [
-                el('div', null, [
-                  el('div', { class:'elem' }, [document.createTextNode(inst.element || '-')]),
-                  el('div', { class:'meta' }, [document.createTextNode(inst.url || '')])
-                ]),
-                inst.url ? el('a', { class:'btn openLink', href: inst.url, target:'_blank', rel:'noopener' }, [document.createTextNode('Open')]) : null
-              ].filter(Boolean));
-              instanceList.appendChild(row);
+            const familyBody = el('div', { class: 'issueFamilyBody' }, []);
+            family.groups.forEach((g) => {
+              familyBody.appendChild(buildIssueCard(g, cardIndex));
+              cardIndex += 1;
             });
 
-            const moreInstancesBtn = instances.length > instanceMax
-              ? el('button', { class:'btn', type:'button' }, [document.createTextNode('Show all instances')])
-              : null;
-            const allInstanceBox = el('div', { style:'display:none;gap:8px;flex-direction:column' });
-            if (moreInstancesBtn) {
-              instances.forEach((inst) => {
-                const row = el('div', { class:'issueInstanceRow' }, [
-                  el('div', null, [
-                    el('div', { class:'elem' }, [document.createTextNode(inst.element || '-')]),
-                    el('div', { class:'meta' }, [document.createTextNode(inst.url || '')])
-                  ]),
-                  inst.url ? el('a', { class:'btn openLink', href: inst.url, target:'_blank', rel:'noopener' }, [document.createTextNode('Open')]) : null
-                ].filter(Boolean));
-                allInstanceBox.appendChild(row);
-              });
-              moreInstancesBtn.addEventListener('click', () => {
-                const isOpen = allInstanceBox.style.display !== 'none';
-                allInstanceBox.style.display = isOpen ? 'none' : 'flex';
-                moreInstancesBtn.textContent = isOpen ? 'Show all instances' : 'Hide all instances';
-              });
-            }
-
-            const lighthouseLink = results.find((r) => g.urls && g.urls.has(r.url) && r.lighthouseHtmlRel);
-            const bodySections = [
-              el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode("What's broken")]),
-                el('div', { class:'muted' }, [document.createTextNode(i.Description || '')])
-              ]),
-              isFormIssue && i.Element ? el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('Form diagnostics')]),
-                isClientAudience
-                  ? el('div', { class:'muted' }, [document.createTextNode(i.Element)])
-                  : el('pre', { class:'code' }, [document.createTextNode(i.Element)])
-              ]) : null,
-              el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('AI prioritization')]),
-                el('div', { class:'muted' }, [document.createTextNode(aiPrioritization(g))])
-              ]),
-              el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('Affected pages')]),
-                affectedList,
-                moreUrlsBtn || el('div', { class:'muted' }, [document.createTextNode(urls.length ? '' : '-')]),
-                allUrlsBox
-              ].filter(Boolean)),
-              el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('How to fix')]),
-                el('div', { class:'muted' }, [document.createTextNode(i.Recommendation || '')])
-              ]),
-              issueHelp[i.Title] ? el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('Why this matters (WP/Elementor)')]),
-                el('div', { class:'muted' }, [document.createTextNode(issueHelp[i.Title].why || '')]),
-                el('div', { class:'muted', style:'margin-top:6px' }, [document.createTextNode('Where to look: ' + (issueHelp[i.Title].where || ''))]),
-                el('div', { class:'muted', style:'margin-top:6px' }, [document.createTextNode('Fix approach: ' + (issueHelp[i.Title].fix || ''))])
-              ]) : null,
-              el('div', { class:'actions' }, [
-                el('button', { class:'btn', type:'button' }, [document.createTextNode('Copy Issue Details')]),
-                screenshots.length ? el('a', { class:'btn', href: screenshots[0], target:'_blank', rel:'noopener' }, [document.createTextNode('View Screenshot')]) : null,
-                lighthouseLink ? el('a', { class:'btn', href: lighthouseLink.lighthouseHtmlRel, target:'_blank', rel:'noopener' }, [document.createTextNode('View Lighthouse')]) : null,
-                el('a', { class:'btn primary', href: urls[0] || i.URL || '#', target:'_blank', rel:'noopener' }, [document.createTextNode('Open Example Page')])
-              ])
-            ];
-            if (!isClientAudience) {
-              bodySections.splice(3, 0, el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('Affected element')]),
-                el('pre', { class:'code' }, [document.createTextNode(i.Element || '')])
-              ]));
-              bodySections.splice(4, 0, el('div', null, [
-                el('div', { class:'sectionTitle' }, [document.createTextNode('Instances')]),
-                instanceList,
-                moreInstancesBtn || el('div', { class:'muted' }, [document.createTextNode(instances.length ? '' : '-')]),
-                allInstanceBox
-              ].filter(Boolean)));
-            }
-            const body = el('div', { class:'cardBody' }, bodySections);
-
-            const copyBtn = body.querySelector('.actions button');
-            copyBtn.addEventListener('click', async () => {
-              try {
-                await navigator.clipboard.writeText(issueDetailsForCopy(i));
-              } catch {
-                // best-effort
-              }
-            });
-
-            card.appendChild(summary);
-            card.appendChild(body);
-            wrap.appendChild(card);
+            familyNode.appendChild(familySummary);
+            familyNode.appendChild(familyBody);
+            wrap.appendChild(familyNode);
           });
         }
 

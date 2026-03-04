@@ -10,6 +10,8 @@ const {
 test('isLikelyContactUrl identifies contact-intent URLs', () => {
   assert.equal(isLikelyContactUrl('https://example.com/contact-us/'), true);
   assert.equal(isLikelyContactUrl('https://example.com/get-in-touch'), true);
+  assert.equal(isLikelyContactUrl('https://example.com/support/'), false);
+  assert.equal(isLikelyContactUrl('https://example.com/request-quote/'), false);
   assert.equal(isLikelyContactUrl('https://example.com/blog/post-1'), false);
 });
 

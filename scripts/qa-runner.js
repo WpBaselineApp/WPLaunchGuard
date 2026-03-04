@@ -11,7 +11,7 @@ const flags = args.filter((arg) => arg.startsWith('--'));
 const clientArg = args.find((arg) => !arg.startsWith('--'));
 
 if (!clientArg) {
-  console.error('Usage: npm run qa <clientname> [--projects=..] [--quick] [--full] [--workers=N] [--skip-seo] [--sample-templates] [--profile=client-safe|engineering-deep] [--report-audience=client|developer]');
+  console.error('Usage: npm run qa <clientname> [--projects=..] [--quick] [--full] [--workers=N] [--skip-seo] [--sample-templates] [--sitemap=..] [--single=..] [--profile=client-safe|engineering-deep] [--report-audience=client|developer]');
   process.exit(1);
 }
 
@@ -26,6 +26,7 @@ try {
 const projectsFlag = flags.find((flag) => flag.startsWith('--projects='));
 const workersFlag = flags.find((flag) => flag.startsWith('--workers='));
 const sitemapFlag = flags.find((flag) => flag.startsWith('--sitemap='));
+const singleFlag = flags.find((flag) => flag.startsWith('--single='));
 const sitemapLimitFlag = flags.find((flag) => flag.startsWith('--sitemap-limit='));
 const sitemapNoSample = flags.includes('--sitemap-no-sample');
 const archiveScreenshots = flags.includes('--archive-screenshots');
@@ -52,6 +53,18 @@ if (fs.existsSync(dataPath)) {
     clientConfig = JSON.parse(fs.readFileSync(dataPath, 'utf8'));
   } catch (error) {
     console.warn(`[qa-runner] Could not parse client config ${dataPath}: ${error.message}`);
+  }
+}
+
+let singleUrl = '';
+let singleOrigin = '';
+if (singleFlag) {
+  singleUrl = singleFlag.replace('--single=', '').trim();
+  try {
+    singleOrigin = new URL(singleUrl).origin;
+  } catch {
+    console.error('Invalid --single URL');
+    process.exit(1);
   }
 }
 
@@ -276,6 +289,12 @@ async function discoverSitemap(baseUrl) {
 }
 
 async function resolveUrlsPath() {
+  if (singleUrl) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+    fs.writeFileSync(sitemapOutput, JSON.stringify({ urls: [singleUrl] }, null, 2));
+    return sitemapOutput;
+  }
+
   if (derivedSitemapFlag) {
     const sitemapUrl = derivedSitemapFlag.replace('--sitemap=', '').trim();
     if (!sitemapUrl) {
@@ -514,6 +533,8 @@ resolveUrlsPath()
       env.REST_BASE = clientConfig.restBase;
     } else if (clientConfig.baseUrl) {
       env.REST_BASE = clientConfig.baseUrl;
+    } else if (singleOrigin) {
+      env.REST_BASE = singleOrigin;
     } else if (Array.isArray(clientConfig.urls) && clientConfig.urls.length > 0) {
       try {
         env.REST_BASE = new URL(clientConfig.urls[0]).origin;

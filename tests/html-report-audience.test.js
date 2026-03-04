@@ -100,6 +100,8 @@ test('html report includes audience toggle and default audience wiring', () => {
   assert.ok(html.includes('"defaultAudience":"developer"'));
   assert.ok(html.includes('function readStoredAudience()'));
   assert.ok(html.includes('function renderAudienceHero()'));
+  assert.ok(html.includes('function buildIssueFamilies('));
+  assert.ok(html.includes('issueFamilyAccordion'));
   assert.ok(html.includes("btn.setAttribute('aria-pressed'"));
   assert.ok(html.includes("btn.setAttribute('data-audience-current'"));
 });

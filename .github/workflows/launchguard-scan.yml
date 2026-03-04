@@ -1,0 +1,48 @@
+name: LaunchGuard Scan Runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      client_name:
+        description: "Client slug (matches data/clients/<name>.json)"
+        required: true
+        type: string
+      profile:
+        description: "QA profile"
+        required: true
+        default: "client-safe"
+        type: choice
+        options:
+          - client-safe
+          - engineering-deep
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run QA
+        env:
+          QA_PROFILE: ${{ inputs.profile }}
+          FORM_SUBMIT_MODE: dry-run
+          SCREENSHOTS_MODE: off
+        run: npm run qa -- "${{ inputs.client_name }}" --quick
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ inputs.client_name }}
+          path: reports/${{ inputs.client_name }}/

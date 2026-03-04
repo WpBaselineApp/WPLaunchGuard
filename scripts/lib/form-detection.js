@@ -15,7 +15,13 @@ function safeUrlParts(rawUrl) {
 function isLikelyContactUrl(rawUrl) {
   const { path, href } = safeUrlParts(rawUrl);
   const target = `${path} ${href}`;
-  return /(\/|^)(contact|contact-us|get-in-touch|enquiry|inquiry|book|consult|quote|support)(\/|$)/i.test(target);
+  if (/(\/|^)(contact|contact-us|get-in-touch|enquiry|inquiry)(\/|$)/i.test(target)) {
+    return true;
+  }
+  // "support", "quote", "book", "consult" are too noisy as hard blockers.
+  // Treat them as contact-intent only when URL also includes explicit contact keywords.
+  return /(\/|^)(support|quote|book|consult|consultation)(\/|$)/i.test(target) &&
+    /(contact|enquiry|inquiry|get-in-touch)/i.test(target);
 }
 
 function detectEmbeddedFormProvider(frameUrl, frameName = '') {

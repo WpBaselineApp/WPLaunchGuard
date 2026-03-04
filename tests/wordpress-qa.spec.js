@@ -1941,6 +1941,16 @@ async function validateFormsInContext(context, submitMode) {
       const elements = Array.from(form.elements).filter(
         (el) => el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement
       );
+      const requiredFileInputs = elements.filter(
+        (el) => el instanceof HTMLInputElement && (el.type || '').toLowerCase() === 'file' && el.required
+      );
+      if (requiredFileInputs.length > 0) {
+        result.skipped = true;
+        result.skipReason = 'file-upload-required';
+        result.invalidFields = requiredFileInputs.map((el) => el.name || el.id || 'file');
+        results.push(result);
+        continue;
+      }
 
       for (const el of elements) {
         if (el.disabled) continue;
@@ -2732,6 +2742,29 @@ test.describe('WordPress QA suite', () => {
               });
             }
           }
+        }
+
+        if (FORM_SUBMIT_MODE === 'live' && formCheck.total > 0 && result.formsSkipped === formCheck.total) {
+          const skippedDetail = formCheck.results
+            .filter((r) => r.skipped)
+            .slice(0, MAX_SAMPLES)
+            .map((r) => `${r.selector}: ${r.skipReason || 'skipped'}`)
+            .join(' | ');
+          addIssue({
+            Category: 'functionality',
+            Severity: 'minor',
+            Title: 'Form Submission Skipped',
+            Description:
+              `All detected forms were skipped during live submission checks. ${skippedDetail || 'No skip reason provided.'}`,
+            Element: skippedDetail || result.formsIssueSample || 'Form checks skipped',
+            Recommendation:
+              'Use test captcha keys or QA bypass settings so automated submission can verify end-to-end form behavior.',
+            URL: url,
+            _source: 'forms',
+            actionability: 'warning',
+            ownership: 'first_party',
+            journeyScope: 'url'
+          });
         }
 
         const consoleClassifications = consoleErrors.map((msg) => {

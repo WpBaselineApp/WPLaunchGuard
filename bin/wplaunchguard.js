@@ -19,7 +19,7 @@ function exitWithHelp(code = 1) {
       `Usage:`,
       `  ${name} install-browsers`,
       `  ${name} init <clientname> [--url=https://example.com/]`,
-      `  ${name} run <clientname> [--quick|--full|--projects=..|--sitemap=..|--sitemap-limit=..|--auth-user=.. --auth-pass=..]`,
+      `  ${name} run <clientname> [--quick|--full|--projects=..|--sitemap=..|--sitemap-limit=..|--single=..|--auth-user=.. --auth-pass=..]`,
       `  ${name} html <clientname>`,
       `  ${name} report <clientname>`,
       `  ${name} share <clientname>`,
