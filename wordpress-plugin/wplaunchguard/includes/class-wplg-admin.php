@@ -205,10 +205,33 @@ class WPLG_Admin
             echo '<p>No scans started yet.</p>';
         } else {
             $scan = $lastScan['data']['scan'] ?? [];
+            $scanSummary = $this->extract_scan_summary($scan);
             echo '<p><strong>ID:</strong> ' . esc_html((string) ($scan['id'] ?? 'n/a')) . '</p>';
             echo '<p><strong>Status:</strong> ' . esc_html((string) ($scan['status'] ?? 'n/a')) . '</p>';
             echo '<p><strong>Created:</strong> ' . esc_html((string) ($scan['created_at'] ?? 'n/a')) . '</p>';
             echo '<p><strong>Completed:</strong> ' . esc_html((string) ($scan['completed_at'] ?? 'pending')) . '</p>';
+
+            $issuesTotal = $this->extract_issues_total($scanSummary);
+            if ($issuesTotal !== null) {
+                echo '<p><strong>Issues:</strong> ' . esc_html((string) $issuesTotal) . '</p>';
+            }
+
+            $severityText = $this->format_severity_counts($scanSummary);
+            if ($severityText !== '') {
+                echo '<p><strong>Severity:</strong> ' . esc_html($severityText) . '</p>';
+            }
+
+            if (!empty($scanSummary['run_state'])) {
+                echo '<p><strong>Run State:</strong> ' . esc_html((string) $scanSummary['run_state']) . '</p>';
+            }
+
+            if (!empty($scanSummary['workflow_url'])) {
+                echo '<p><a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['workflow_url']) . '">Open GitHub Run</a></p>';
+            }
+
+            if (!empty($scanSummary['reports_artifact_url'])) {
+                echo '<p><a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['reports_artifact_url']) . '">Open Reports Artifact</a></p>';
+            }
         }
         echo '</div>';
         echo '</div>';
@@ -223,12 +246,21 @@ class WPLG_Admin
                 echo '<p>No scan history yet.</p>';
             } else {
                 echo '<table class="widefat striped">';
-                echo '<thead><tr><th>Scan ID</th><th>Status</th><th>Mode</th><th>Created</th></tr></thead><tbody>';
+                echo '<thead><tr><th>Scan ID</th><th>Status</th><th>Mode</th><th>Issues</th><th>Report</th><th>Created</th></tr></thead><tbody>';
                 foreach ($rows as $row) {
+                    $rowSummary = $this->extract_scan_summary($row);
+                    $rowIssues = $this->extract_issues_total($rowSummary);
+                    $reportUrl = (string) ($rowSummary['reports_artifact_url'] ?? ($rowSummary['workflow_url'] ?? ''));
                     echo '<tr>';
                     echo '<td>' . esc_html((string) ($row['id'] ?? '')) . '</td>';
                     echo '<td>' . esc_html((string) ($row['status'] ?? '')) . '</td>';
                     echo '<td>' . esc_html((string) ($row['form_mode'] ?? '')) . '</td>';
+                    echo '<td>' . esc_html($rowIssues !== null ? (string) $rowIssues : 'n/a') . '</td>';
+                    if ($reportUrl !== '') {
+                        echo '<td><a target="_blank" rel="noopener" href="' . esc_url($reportUrl) . '">Open</a></td>';
+                    } else {
+                        echo '<td>n/a</td>';
+                    }
                     echo '<td>' . esc_html((string) ($row['created_at'] ?? '')) . '</td>';
                     echo '</tr>';
                 }
@@ -510,6 +542,53 @@ class WPLG_Admin
             return null;
         }
         return $this->api_request('GET', '/v1/scans/' . rawurlencode($scanId));
+    }
+
+    private function extract_scan_summary(array $scanRow): array
+    {
+        if (isset($scanRow['summary']) && is_array($scanRow['summary'])) {
+            return $scanRow['summary'];
+        }
+
+        if (!empty($scanRow['summary_json']) && is_string($scanRow['summary_json'])) {
+            $decoded = json_decode($scanRow['summary_json'], true);
+            if (is_array($decoded)) {
+                return $decoded;
+            }
+        }
+
+        return [];
+    }
+
+    private function extract_issues_total(array $summary): ?int
+    {
+        if (isset($summary['issues_total']) && is_numeric($summary['issues_total'])) {
+            return (int) $summary['issues_total'];
+        }
+
+        if (isset($summary['run_counts']) && is_array($summary['run_counts']) && isset($summary['run_counts']['issueRows']) && is_numeric($summary['run_counts']['issueRows'])) {
+            return (int) $summary['run_counts']['issueRows'];
+        }
+
+        return null;
+    }
+
+    private function format_severity_counts(array $summary): string
+    {
+        $counts = $summary['issue_severity_counts'] ?? ($summary['severity_counts'] ?? null);
+        if (!is_array($counts) || empty($counts)) {
+            return '';
+        }
+
+        $parts = [];
+        foreach ($counts as $severity => $count) {
+            if (!is_numeric($count)) {
+                continue;
+            }
+            $parts[] = sprintf('%s: %d', (string) $severity, (int) $count);
+        }
+
+        return implode(', ', $parts);
     }
 
     private function redirect_with_notice(string $page, string $status, string $message): void

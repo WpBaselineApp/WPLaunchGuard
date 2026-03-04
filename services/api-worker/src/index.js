@@ -103,6 +103,42 @@ function safeParseJson(raw) {
   }
 }
 
+function parseSummaryObject(rawSummary) {
+  const parsed = safeParseJson(rawSummary);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+  return parsed;
+}
+
+function deriveIssueTotalsFromSummary(summary) {
+  const candidates = [
+    summary.issue_severity_counts,
+    summary.severity_counts
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) continue;
+    const rows = Object.entries(candidate)
+      .map(([severity, count]) => ({
+        severity: String(severity),
+        count: Number(count || 0)
+      }))
+      .filter((row) => row.severity && Number.isFinite(row.count) && row.count > 0);
+    if (rows.length > 0) return rows;
+  }
+
+  return [];
+}
+
+function enrichScanRow(row) {
+  const summary = parseSummaryObject(row.summary_json);
+  return {
+    ...row,
+    summary
+  };
+}
+
 function getPlanDefaults() {
   return [
     { id: 'starter', scans_limit: 30, sites_limit: 10, whitelabel: 1 },
@@ -316,9 +352,13 @@ async function getScan(request, scanId, env) {
     .bind(scanId)
     .all();
 
+  const enrichedScan = enrichScanRow(row);
+  const dbIssueTotals = issueTotals.results || [];
+  const derivedIssueTotals = deriveIssueTotalsFromSummary(enrichedScan.summary || {});
+
   return json({
-    scan: row,
-    issue_totals: issueTotals.results || []
+    scan: enrichedScan,
+    issue_totals: dbIssueTotals.length > 0 ? dbIssueTotals : derivedIssueTotals
   });
 }
 
@@ -331,14 +371,15 @@ async function listSiteScans(request, env, siteId, limitValue) {
   const limit = Math.max(1, Math.min(50, Number(limitValue || 10) || 10));
   const result = await env.DB.prepare(
     [
-      'SELECT id, site_id, status, profile, form_mode, trigger_type, created_at, updated_at, completed_at',
+      'SELECT id, site_id, status, profile, form_mode, trigger_type, created_at, updated_at, completed_at, summary_json',
       'FROM scans WHERE site_id = ? ORDER BY created_at DESC LIMIT ?'
     ].join(' ')
   )
     .bind(siteId, limit)
     .all();
 
-  return json({ scans: result.results || [] });
+  const scans = (result.results || []).map(enrichScanRow);
+  return json({ scans });
 }
 
 async function getBranding(request, env, siteId) {
