@@ -129,12 +129,17 @@ Collect:
 3. `STRIPE_PRICE_ID_GROWTH`
 4. `STRIPE_PRICE_ID_AGENCY`
 
-Create webhook endpoint placeholder URL (temporary is fine this week), subscribe to:
+Create Stripe webhook endpoint (week 5 target path):
+
+`https://<your-worker-subdomain>.workers.dev/v1/stripe/webhook`
+
+Subscribe to:
 
 1. `checkout.session.completed`
-2. `customer.subscription.updated`
-3. `customer.subscription.deleted`
-4. `invoice.payment_failed`
+2. `customer.subscription.created`
+3. `customer.subscription.updated`
+4. `customer.subscription.deleted`
+5. `invoice.payment_failed`
 
 Collect `STRIPE_WEBHOOK_SECRET`.
 

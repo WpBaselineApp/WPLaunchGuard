@@ -27,6 +27,7 @@
     "week2:verify": "bash scripts/week2-verify.sh",
     "week3:verify": "bash scripts/week3-verify.sh",
     "week4:verify": "bash scripts/week4-verify.sh",
+    "week5:verify": "bash scripts/week5-verify.sh",
     "api:dev": "npx wrangler dev --config services/api-worker/wrangler.toml",
     "api:deploy": "npx wrangler deploy --config services/api-worker/wrangler.toml",
     "qa": "node scripts/qa-runner.js",

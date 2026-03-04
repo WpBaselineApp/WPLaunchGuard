@@ -22,6 +22,7 @@ class WPLG_Admin
         add_action('admin_post_wplg_register_site', [$this, 'handle_register_site']);
         add_action('admin_post_wplg_run_scan', [$this, 'handle_run_scan']);
         add_action('admin_post_wplg_save_branding', [$this, 'handle_save_branding']);
+        add_action('admin_post_wplg_start_checkout', [$this, 'handle_start_checkout']);
 
         add_action('admin_notices', [$this, 'render_admin_notice']);
     }
@@ -45,6 +46,15 @@ class WPLG_Admin
             'manage_options',
             'wplaunchguard-branding',
             [$this, 'render_branding']
+        );
+
+        add_submenu_page(
+            'wplaunchguard-dashboard',
+            __('Billing', 'wplaunchguard'),
+            __('Billing', 'wplaunchguard'),
+            'manage_options',
+            'wplaunchguard-billing',
+            [$this, 'render_billing']
         );
 
         add_submenu_page(
@@ -191,9 +201,13 @@ class WPLG_Admin
             echo '<p>' . esc_html($limits->get_error_message()) . '</p>';
         } else {
             $data = $limits['data'];
+            $planId = sanitize_text_field((string) ($data['plan_id'] ?? 'starter'));
+            $billingStatus = sanitize_text_field((string) ($data['billing_status'] ?? 'trial'));
             echo '<p><strong>Period:</strong> ' . esc_html((string) ($data['period_key'] ?? 'n/a')) . '</p>';
+            echo '<p><strong>Plan:</strong> ' . esc_html($planId) . ' (' . esc_html($billingStatus) . ')</p>';
             echo '<p><strong>Scans:</strong> ' . esc_html((string) ($data['scans_used'] ?? 0)) . ' / ' . esc_html((string) ($data['scans_limit'] ?? 0)) . '</p>';
             echo '<p><strong>Sites Limit:</strong> ' . esc_html((string) ($data['sites_limit'] ?? 0)) . '</p>';
+            echo '<p><a class="button" href="' . esc_url(admin_url('admin.php?page=wplaunchguard-billing')) . '">Manage Billing</a></p>';
         }
         echo '</div>';
 
@@ -360,6 +374,87 @@ class WPLG_Admin
         <?php
     }
 
+    public function render_billing(): void
+    {
+        $siteId = $this->get_option(self::OPTION_SITE_ID);
+
+        echo '<div class="wrap wplg-wrap">';
+        echo '<h1>Billing</h1>';
+
+        if ($siteId === '') {
+            echo '<p>Connect your site in LaunchGuard Dashboard first.</p>';
+            echo '</div>';
+            return;
+        }
+
+        $response = $this->fetch_billing($siteId);
+        if (is_wp_error($response)) {
+            echo '<p>' . esc_html($response->get_error_message()) . '</p>';
+            echo '</div>';
+            return;
+        }
+
+        $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+        $billing = is_array($data['billing'] ?? null) ? $data['billing'] : [];
+        $plans = is_array($data['plans'] ?? null) ? $data['plans'] : [];
+
+        $currentPlanId = sanitize_text_field((string) ($billing['plan_id'] ?? 'starter'));
+        $billingStatus = sanitize_text_field((string) ($billing['billing_status'] ?? 'trial'));
+        $currentPeriodEnd = sanitize_text_field((string) ($billing['current_period_end'] ?? ''));
+
+        echo '<div class="wplg-card">';
+        echo '<h2>Current Subscription</h2>';
+        echo '<p><strong>Plan:</strong> ' . esc_html($currentPlanId) . '</p>';
+        echo '<p><strong>Status:</strong> ' . esc_html($billingStatus) . '</p>';
+        if ($currentPeriodEnd !== '') {
+            echo '<p><strong>Current Period End:</strong> ' . esc_html($currentPeriodEnd) . '</p>';
+        }
+        echo '</div>';
+
+        if (empty($plans)) {
+            echo '<div class="wplg-card"><p>No plans available yet.</p></div>';
+            echo '</div>';
+            return;
+        }
+
+        echo '<div class="wplg-plan-grid">';
+        foreach ($plans as $plan) {
+            $planId = sanitize_text_field((string) ($plan['id'] ?? ''));
+            $planScans = (int) ($plan['scans_limit'] ?? 0);
+            $planSites = (int) ($plan['sites_limit'] ?? 0);
+            $planWhitelabel = !empty($plan['whitelabel']);
+            $stripeConfigured = !empty($plan['stripe_price_configured']);
+            $isCurrent = $planId === $currentPlanId;
+
+            echo '<div class="wplg-card wplg-plan-card">';
+            echo '<h2>' . esc_html(ucfirst($planId)) . '</h2>';
+            if ($isCurrent) {
+                echo '<p><span class="wplg-pill">Current</span></p>';
+            }
+            echo '<p><strong>Scans / month:</strong> ' . esc_html((string) $planScans) . '</p>';
+            echo '<p><strong>Sites:</strong> ' . esc_html((string) $planSites) . '</p>';
+            echo '<p><strong>White-label:</strong> ' . esc_html($planWhitelabel ? 'Included' : 'No') . '</p>';
+
+            if (!$stripeConfigured) {
+                echo '<p>Checkout not configured for this plan yet.</p>';
+            }
+
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            echo '<input type="hidden" name="action" value="wplg_start_checkout" />';
+            echo '<input type="hidden" name="plan_id" value="' . esc_attr($planId) . '" />';
+            wp_nonce_field('wplg_start_checkout');
+
+            $buttonText = $isCurrent ? 'Change Plan' : 'Choose Plan';
+            $buttonDisabled = $stripeConfigured ? '' : ' disabled="disabled"';
+            echo '<p><button class="button button-primary" type="submit"' . $buttonDisabled . '>' . esc_html($buttonText) . '</button></p>';
+            echo '</form>';
+            echo '</div>';
+        }
+        echo '</div>';
+
+        echo '</div>';
+    }
+
     public function handle_register_site(): void
     {
         $this->ensure_admin_post('wplg_register_site');
@@ -455,6 +550,58 @@ class WPLG_Admin
         $this->redirect_with_notice('wplaunchguard-branding', 'success', 'Branding saved.');
     }
 
+    public function handle_start_checkout(): void
+    {
+        $this->ensure_admin_post('wplg_start_checkout');
+
+        $siteId = $this->get_option(self::OPTION_SITE_ID);
+        if ($siteId === '') {
+            $this->redirect_with_notice('wplaunchguard-billing', 'error', 'Connect the site before starting checkout.');
+        }
+
+        $planId = sanitize_key((string) ($_POST['plan_id'] ?? ''));
+        if (!in_array($planId, ['starter', 'growth', 'agency'], true)) {
+            $this->redirect_with_notice('wplaunchguard-billing', 'error', 'Invalid plan selected.');
+        }
+
+        $successUrl = add_query_arg(
+            [
+                'page' => 'wplaunchguard-billing',
+                'wplg_notice' => 'success',
+                'wplg_message' => 'Checkout complete. Billing status may take up to 60 seconds to refresh.'
+            ],
+            admin_url('admin.php')
+        );
+
+        $cancelUrl = add_query_arg(
+            [
+                'page' => 'wplaunchguard-billing',
+                'wplg_notice' => 'error',
+                'wplg_message' => 'Checkout canceled.'
+            ],
+            admin_url('admin.php')
+        );
+
+        $payload = [
+            'plan_id' => $planId,
+            'success_url' => $successUrl,
+            'cancel_url' => $cancelUrl
+        ];
+
+        $response = $this->api_request('POST', '/v1/sites/' . rawurlencode($siteId) . '/billing/checkout-session', $payload);
+        if (is_wp_error($response)) {
+            $this->redirect_with_notice('wplaunchguard-billing', 'error', $response->get_error_message());
+        }
+
+        $checkoutUrl = esc_url_raw((string) ($response['data']['checkout_url'] ?? ''));
+        if ($checkoutUrl === '' || !preg_match('#^https://#', $checkoutUrl)) {
+            $this->redirect_with_notice('wplaunchguard-billing', 'error', 'Checkout URL missing from API response.');
+        }
+
+        wp_redirect($checkoutUrl);
+        exit;
+    }
+
     private function ensure_admin_post(string $action): void
     {
         if (!current_user_can('manage_options')) {
@@ -528,6 +675,11 @@ class WPLG_Admin
     private function fetch_limits(string $siteId)
     {
         return $this->api_request('GET', '/v1/sites/' . rawurlencode($siteId) . '/limits');
+    }
+
+    private function fetch_billing(string $siteId)
+    {
+        return $this->api_request('GET', '/v1/sites/' . rawurlencode($siteId) . '/billing');
     }
 
     private function fetch_scans(string $siteId, int $limit)

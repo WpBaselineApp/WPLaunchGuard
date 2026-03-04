@@ -25,3 +25,24 @@
 .wplg-card h2 {
   margin-top: 0;
 }
+
+.wplg-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+  margin: 16px 0;
+}
+
+.wplg-plan-card {
+  margin: 0;
+}
+
+.wplg-pill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  background: #d9f7e8;
+  color: #0a5a31;
+  border: 1px solid #9bd9b6;
+}
