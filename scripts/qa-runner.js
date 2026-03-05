@@ -188,8 +188,8 @@ async function fetchRestUrls(restBase) {
     (key) => !['attachment', 'nav_menu_item', 'revision'].includes(key)
   );
 
-  const urls = [apiBase];
-  const seen = new Set(urls);
+  const urls = [];
+  const seen = new Set();
 
   for (const typeKey of typeKeys) {
     let page = 1;
@@ -320,22 +320,35 @@ async function resolveUrlsPath() {
   if (!noRest && restBaseCandidate) {
     try {
       const uniqueUrls = await fetchRestUrls(restBaseCandidate);
+      const homeCandidate = String(restBaseCandidate || '').replace(/\/+$/, '');
+      if (homeCandidate && !uniqueUrls.includes(homeCandidate)) {
+        uniqueUrls.unshift(homeCandidate);
+      }
       if (sampleTemplates) {
         uniqueUrls.splice(0, uniqueUrls.length, ...reduceTemplateUrls(uniqueUrls));
       }
-      if (uniqueUrls.length > 0) {
+      const nonHomeUrls = uniqueUrls.filter((url) => {
+        try {
+          return new URL(url).pathname.replace(/\/+$/, '') !== '';
+        } catch {
+          return false;
+        }
+      });
+      if (nonHomeUrls.length > 0) {
         fs.mkdirSync(reportsDir, { recursive: true });
         fs.writeFileSync(sitemapOutput, JSON.stringify({ urls: uniqueUrls }, null, 2));
         return sitemapOutput;
       }
+      console.warn('[qa-runner] REST discovery returned only homepage; falling back to sitemap discovery.');
     } catch {
       // ignore and fall through
     }
   }
 
   // Try auto-discovery if no explicit sitemap and client has baseUrl.
-  if (clientConfig.baseUrl) {
-    const auto = await discoverSitemap(clientConfig.baseUrl);
+  const sitemapDiscoveryBase = clientConfig.baseUrl || String(restBaseCandidate || '').trim();
+  if (sitemapDiscoveryBase) {
+    const auto = await discoverSitemap(sitemapDiscoveryBase);
     if (auto) {
       const parser = new XMLParser({ ignoreAttributes: false });
       let urls = await parseSitemap(auto, parser);
