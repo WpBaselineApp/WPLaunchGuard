@@ -105,6 +105,7 @@ test('html report wires token-safe asset links and page-failures navigation', ()
   assert.ok(html.includes('id="openExcelBtnSticky"'));
   assert.ok(html.includes('id="goToPageFailuresBtn"'));
   assert.ok(html.includes('function withReportToken(urlValue)'));
+  assert.ok(html.includes('/^https?:\\/\\//i.test(href)'));
   assert.ok(html.includes('wireStaticAssetButtons()'));
   assert.ok(html.includes("rawInitialHash === 'page-failures'"));
   assert.ok(html.includes("activateTab('pages')"));

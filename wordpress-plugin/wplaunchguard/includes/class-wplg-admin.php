@@ -328,19 +328,6 @@ class WPLG_Admin
 
         $limits = $this->fetch_limits($siteId);
         $scans = $this->fetch_scans($siteId, 10);
-        $lastScan = $this->fetch_last_scan();
-        $latestScanRow = [];
-        if (!is_wp_error($lastScan) && is_array($lastScan['data']['scan'] ?? null)) {
-            $latestScanRow = $lastScan['data']['scan'];
-        }
-        $latestScanId = sanitize_text_field((string) ($latestScanRow['id'] ?? ''));
-        $noticeStatus = sanitize_key((string) wp_unslash($_GET['wplg_notice'] ?? ''));
-        $modalScanId = sanitize_text_field((string) wp_unslash($_GET['wplg_scan_id'] ?? ''));
-        if ($modalScanId === '' && $latestScanId !== '') {
-            $modalScanId = $latestScanId;
-        }
-        $latestStatus = sanitize_key((string) ($latestScanRow['status'] ?? ''));
-        $shouldAutoOpenModal = $modalScanId !== '' && ($noticeStatus === 'success' || $this->is_scan_in_progress($latestStatus));
 
         echo '<div class="wplg-dashboard-grid">';
         echo '<div class="wplg-grid wplg-grid-top">';
@@ -352,6 +339,7 @@ class WPLG_Admin
         echo '<li><span>Tenant ID</span><code>' . esc_html($this->get_option(self::OPTION_TENANT_ID)) . '</code></li>';
         echo '<li><span>API Base</span><code>' . esc_html($this->get_api_base()) . '</code></li>';
         echo '</ul>';
+        echo '<div class="wplg-actions"><a class="button button-primary" href="' . esc_url(admin_url('admin.php?page=wplaunchguard-scan')) . '">Open Scan Workspace</a></div>';
         echo '</div>';
 
         echo '</div>';
@@ -382,15 +370,10 @@ class WPLG_Admin
         }
         echo '</div>';
 
-        $this->render_latest_scan_card($lastScan, $latestScanRow);
         echo '</div>';
 
         $this->render_recent_scans_card($scans);
         echo '</div>';
-
-        $this->render_scan_progress_modal($modalScanId, $shouldAutoOpenModal);
-
-        $this->render_scan_form_script();
         echo '</div>';
     }
 

@@ -89,6 +89,7 @@
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
   gap: 18px;
   margin: 18px 0;
+  align-items: start;
 }
 
 .wplg-dashboard-grid {
@@ -96,14 +97,18 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "connection connection"
-    "plan recent"
-    "latest latest";
+    "plan recent";
   gap: 18px;
 }
 
 .wplg-dashboard .wplg-grid-top,
 .wplg-dashboard .wplg-grid-mid {
   display: contents;
+}
+
+.wplg-scan-page .wplg-grid {
+  grid-template-columns: minmax(320px, 0.95fr) minmax(420px, 1.45fr);
+  grid-template-areas: "setup latest";
 }
 
 .wplg-card {
@@ -115,25 +120,25 @@
   box-shadow: 0 10px 24px -22px rgba(22, 33, 48, 0.45);
 }
 
-.wplg-card-connection {
+.wplg-dashboard .wplg-card-connection {
   grid-area: connection;
   padding-top: 14px;
   padding-bottom: 14px;
 }
 
-.wplg-card-plan {
+.wplg-dashboard .wplg-card-plan {
   grid-area: plan;
 }
 
-.wplg-card-recent {
+.wplg-dashboard .wplg-card-recent {
   grid-area: recent;
 }
 
-.wplg-card-latest {
+.wplg-scan-page .wplg-card-latest {
   grid-area: latest;
 }
 
-.wplg-card-scan-setup {
+.wplg-scan-page .wplg-card-scan-setup {
   grid-area: setup;
 }
 
@@ -546,7 +551,13 @@
     grid-template-areas:
       "connection"
       "plan"
-      "recent"
+      "recent";
+  }
+
+  .wplg-scan-page .wplg-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "setup"
       "latest";
   }
 

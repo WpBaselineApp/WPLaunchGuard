@@ -1580,7 +1580,7 @@ async function generate(clientName) {
           if (!href || !reportToken) return href;
           if (href.startsWith('#')) return href;
           if (/^(mailto:|tel:|javascript:|data:)/i.test(href)) return href;
-          if (/^https?:\/\//i.test(href)) return href;
+          if (/^https?:\\/\\//i.test(href)) return href;
 
           const hashIndex = href.indexOf('#');
           const hash = hashIndex >= 0 ? href.slice(hashIndex) : '';
