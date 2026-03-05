@@ -157,6 +157,9 @@ jobs:
       - name: Run QA
         id: run_qa
         shell: bash
+        env:
+          CALLBACK_SECRET_URL: ${{ secrets.LAUNCHGUARD_CALLBACK_URL }}
+          CALLBACK_SECRET_TOKEN: ${{ secrets.LAUNCHGUARD_CALLBACK_TOKEN }}
         run: |
           set +e
           normalize_bool() {
@@ -226,6 +229,11 @@ jobs:
           if [[ "${#PROJECTS[@]}" -eq 0 ]]; then
             PROJECTS=("${DESKTOP_PROJECTS[@]}")
           fi
+          PROJECT_COUNT="${#PROJECTS[@]}"
+          if [[ "$PROJECT_COUNT" -lt 1 ]]; then
+            PROJECT_COUNT=1
+          fi
+          PROGRESS_PROJECT="${PROJECTS[0]}"
 
           PROJECTS_CSV=$(IFS=,; echo "${PROJECTS[*]}")
           REST_BASE_INPUT="${{ inputs.site_url }}"
@@ -245,6 +253,7 @@ jobs:
           echo "effective_quick_scan_enabled=$QUICK_ENABLED" >> "$GITHUB_OUTPUT"
           echo "effective_responsive_enabled=$RESPONSIVE_ENABLED" >> "$GITHUB_OUTPUT"
           echo "effective_viewport_preset=$VIEWPORT_PRESET" >> "$GITHUB_OUTPUT"
+          echo "effective_progress_project=$PROGRESS_PROJECT" >> "$GITHUB_OUTPUT"
 
           CMD=(npm run qa -- "${{ inputs.client_name }}" "--projects=${PROJECTS_CSV}")
           if [[ -n "$TARGET_SINGLE" ]]; then
@@ -259,6 +268,19 @@ jobs:
           export SCREENSHOTS_MODE="$SCREENSHOTS_MODE"
           export SCREENSHOTS_LIMIT=4
           export SKIP_LIGHTHOUSE="$SKIP_LIGHTHOUSE_FLAG"
+          export LAUNCHGUARD_SCAN_ID="${{ inputs.scan_id }}"
+          export LAUNCHGUARD_PROGRESS_PROJECT="$PROGRESS_PROJECT"
+          export LAUNCHGUARD_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
+
+          PROGRESS_CALLBACK_URL="$CALLBACK_SECRET_URL"
+          if [[ -n "${{ inputs.callback_url }}" ]]; then
+            PROGRESS_CALLBACK_URL="${{ inputs.callback_url }}"
+          fi
+          if [[ -n "$PROGRESS_CALLBACK_URL" && -n "$CALLBACK_SECRET_TOKEN" ]]; then
+            export LAUNCHGUARD_PROGRESS_CALLBACK_URL="$PROGRESS_CALLBACK_URL"
+            export LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN="$CALLBACK_SECRET_TOKEN"
+          fi
+
           if [[ -n "$REST_BASE_INPUT" ]]; then
             export REST_BASE="$REST_BASE_INPUT"
           fi

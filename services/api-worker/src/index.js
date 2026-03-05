@@ -1265,10 +1265,65 @@ async function handleStripeWebhook(request, env) {
   return json({ ok: true, received: true, event_type: eventType });
 }
 
+function coerceFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function mergeProgressSnapshot(baseProgressRaw, patchProgressRaw) {
+  const base = baseProgressRaw && typeof baseProgressRaw === 'object' && !Array.isArray(baseProgressRaw) ? baseProgressRaw : {};
+  const patch = patchProgressRaw && typeof patchProgressRaw === 'object' && !Array.isArray(patchProgressRaw) ? patchProgressRaw : {};
+  const merged = { ...base, ...patch };
+
+  const maxKeys = ['total_urls', 'completed_urls', 'current_index', 'percent'];
+  for (const key of maxKeys) {
+    const baseValue = coerceFiniteNumber(base[key]);
+    const patchValue = coerceFiniteNumber(patch[key]);
+    if (baseValue === null && patchValue === null) {
+      continue;
+    }
+    if (baseValue === null) {
+      merged[key] = patchValue;
+      continue;
+    }
+    if (patchValue === null) {
+      merged[key] = baseValue;
+      continue;
+    }
+    merged[key] = Math.max(baseValue, patchValue);
+  }
+
+  const patchCurrentUrl = String(patch.current_url || '').trim();
+  if (!patchCurrentUrl) {
+    merged.current_url = String(base.current_url || merged.current_url || '').trim();
+  }
+
+  return merged;
+}
+
 function mergeSummary(existingSummaryRaw, patch) {
   const base = safeParseJson(existingSummaryRaw);
   const baseObject = base && typeof base === 'object' && !Array.isArray(base) ? base : {};
-  return { ...baseObject, ...patch };
+  const patchObject = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
+  const merged = { ...baseObject, ...patchObject };
+
+  if (baseObject.progress || patchObject.progress) {
+    merged.progress = mergeProgressSnapshot(baseObject.progress, patchObject.progress);
+  }
+
+  const baseProgressPercent = coerceFiniteNumber(baseObject.progress_percent);
+  const patchProgressPercent = coerceFiniteNumber(patchObject.progress_percent);
+  if (baseProgressPercent !== null || patchProgressPercent !== null) {
+    if (baseProgressPercent === null) {
+      merged.progress_percent = patchProgressPercent;
+    } else if (patchProgressPercent === null) {
+      merged.progress_percent = baseProgressPercent;
+    } else {
+      merged.progress_percent = Math.max(baseProgressPercent, patchProgressPercent);
+    }
+  }
+
+  return merged;
 }
 
 function getPublicApiBase(env) {

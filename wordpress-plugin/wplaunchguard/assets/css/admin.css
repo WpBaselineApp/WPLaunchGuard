@@ -14,6 +14,10 @@
   max-width: 1220px;
 }
 
+.wplg-dashboard {
+  max-width: none;
+}
+
 .wplg-wrap h1,
 .wplg-wrap h2,
 .wplg-wrap h3 {
@@ -87,6 +91,22 @@
   margin: 18px 0;
 }
 
+.wplg-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "connection connection"
+    "plan recent"
+    "latest latest"
+    "setup setup";
+  gap: 18px;
+}
+
+.wplg-dashboard .wplg-grid-top,
+.wplg-dashboard .wplg-grid-mid {
+  display: contents;
+}
+
 .wplg-card {
   background: linear-gradient(180deg, var(--wplg-surface) 0%, var(--wplg-surface-soft) 100%);
   border: 1px solid var(--wplg-border);
@@ -94,6 +114,45 @@
   padding: 18px;
   margin: 0;
   box-shadow: 0 10px 24px -22px rgba(22, 33, 48, 0.45);
+}
+
+.wplg-card-connection {
+  grid-area: connection;
+  padding-top: 14px;
+  padding-bottom: 14px;
+}
+
+.wplg-card-plan {
+  grid-area: plan;
+}
+
+.wplg-card-recent {
+  grid-area: recent;
+}
+
+.wplg-card-latest {
+  grid-area: latest;
+}
+
+.wplg-card-scan-setup {
+  grid-area: setup;
+}
+
+.wplg-card-connection .wplg-kv-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.wplg-card-connection .wplg-kv-list li {
+  padding: 0;
+  border: 0;
+  display: block;
+}
+
+.wplg-card-connection .wplg-kv-list li span,
+.wplg-card-connection .wplg-kv-list li code {
+  display: block;
 }
 
 .wplg-card h2 {
@@ -382,16 +441,121 @@
   display: none;
 }
 
+.wplg-modal-open {
+  overflow: hidden;
+}
+
+.wplg-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: none;
+}
+
+.wplg-modal.is-open {
+  display: block;
+}
+
+.wplg-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.wplg-modal__dialog {
+  position: relative;
+  max-width: 760px;
+  margin: 60px auto;
+  background: #fff;
+  border: 1px solid #d7e2ef;
+  border-radius: 14px;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.28);
+  overflow: hidden;
+}
+
+.wplg-modal__header,
+.wplg-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #e2ebf5;
+}
+
+.wplg-modal__footer {
+  border-bottom: 0;
+  border-top: 1px solid #e2ebf5;
+  justify-content: flex-end;
+}
+
+.wplg-modal__header h2 {
+  margin: 0;
+  font-size: 21px;
+}
+
+.wplg-modal__body {
+  padding: 16px 18px;
+}
+
+.wplg-modal__meta {
+  margin: 0 0 8px;
+}
+
+.wplg-modal__progress {
+  margin-top: 8px;
+}
+
+.wplg-modal__ticker {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #d8e5f3;
+  border-radius: 10px;
+  background: #f7fbff;
+  color: #1e3247;
+}
+
+.wplg-modal__ticker code {
+  white-space: normal;
+}
+
+.wplg-modal__ticker.muted {
+  color: #4f657a;
+  background: #f2f7fc;
+}
+
+.wplg-modal .button.is-disabled,
+.wplg-modal .button[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 @media (max-width: 960px) {
   .wplg-dashboard .wplg-page-title h1 {
     font-size: 29px;
   }
 
-  .wplg-grid {
+  .wplg-grid,
+  .wplg-dashboard-grid {
     grid-template-columns: 1fr;
+    grid-template-areas:
+      "connection"
+      "plan"
+      "recent"
+      "latest"
+      "setup";
   }
 
   .wplg-kv-list li {
     align-items: flex-start;
+  }
+
+  .wplg-card-connection .wplg-kv-list {
+    grid-template-columns: 1fr;
+  }
+
+  .wplg-modal__dialog {
+    width: calc(100% - 24px);
+    margin: 24px auto;
   }
 }

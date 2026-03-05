@@ -118,6 +118,19 @@ const SUPPRESSED_LAZYLOAD_PATTERNS = [
   /intercom/i,
   /tawk/i
 ];
+const LAUNCHGUARD_SCAN_ID = String(process.env.LAUNCHGUARD_SCAN_ID || '').trim();
+const LAUNCHGUARD_PROGRESS_CALLBACK_URL = String(process.env.LAUNCHGUARD_PROGRESS_CALLBACK_URL || '').trim();
+const LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN = String(process.env.LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN || '').trim();
+const LAUNCHGUARD_PROGRESS_PROJECT = String(process.env.LAUNCHGUARD_PROGRESS_PROJECT || '').trim();
+const LAUNCHGUARD_PROGRESS_PROJECT_COUNT = Math.max(
+  1,
+  Number(process.env.LAUNCHGUARD_PROGRESS_PROJECT_COUNT || 1)
+);
+const LAUNCHGUARD_PROGRESS_ENABLED = Boolean(
+  LAUNCHGUARD_SCAN_ID &&
+  LAUNCHGUARD_PROGRESS_CALLBACK_URL &&
+  LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN
+);
 
 const results = [];
 const issues = [];
@@ -2288,6 +2301,77 @@ function writeWorkerShard(testInfo, totalInputUrls) {
   fs.writeFileSync(filePath, JSON.stringify(payload), 'utf8');
 }
 
+function shouldEmitProgress(projectName) {
+  if (!LAUNCHGUARD_PROGRESS_ENABLED) return false;
+  if (!LAUNCHGUARD_PROGRESS_PROJECT) return true;
+  return String(projectName || '').trim() === LAUNCHGUARD_PROGRESS_PROJECT;
+}
+
+async function postScanProgress(summaryPatch) {
+  if (!LAUNCHGUARD_PROGRESS_ENABLED) return;
+
+  try {
+    const response = await fetch(LAUNCHGUARD_PROGRESS_CALLBACK_URL, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-scan-callback-token': LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN
+      },
+      body: JSON.stringify({
+        scan_id: LAUNCHGUARD_SCAN_ID,
+        status: 'running',
+        summary: summaryPatch
+      })
+    });
+
+    if (!response.ok) {
+      // Swallow progress callback failures so QA execution is never blocked.
+    }
+  } catch {
+    // Swallow progress callback failures so QA execution is never blocked.
+  }
+}
+
+async function notifyScanUrlStarted(projectName, index, url) {
+  if (!shouldEmitProgress(projectName)) return;
+  const totalRuns = Math.max(1, urls.length);
+  const safeIndex = Math.max(0, index);
+  const completedRuns = Math.max(0, safeIndex);
+  const percent = Math.max(1, Math.min(99, Math.round((completedRuns / totalRuns) * 100)));
+
+  await postScanProgress({
+    progress_percent: percent,
+    progress: {
+      phase: 'scanning',
+      current_url: url,
+      current_index: safeIndex + 1,
+      completed_urls: completedRuns,
+      total_urls: totalRuns,
+      project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT
+    }
+  });
+}
+
+async function notifyScanUrlCompleted(projectName, index, url) {
+  if (!shouldEmitProgress(projectName)) return;
+  const totalRuns = Math.max(1, urls.length);
+  const completedRuns = Math.max(1, Math.min(totalRuns, index + 1));
+  const percent = Math.max(1, Math.min(99, Math.round((completedRuns / totalRuns) * 100)));
+
+  await postScanProgress({
+    progress_percent: percent,
+    progress: {
+      phase: 'scanning',
+      current_url: url,
+      last_completed_url: url,
+      current_index: completedRuns,
+      completed_urls: completedRuns,
+      total_urls: totalRuns,
+      project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT
+    }
+  });
+}
+
 test.describe('WordPress QA suite', () => {
   test.afterAll(async ({}, testInfo) => {
     writeWorkerShard(testInfo, urls.length);
@@ -2296,12 +2380,13 @@ test.describe('WordPress QA suite', () => {
   for (const [index, url] of urls.entries()) {
     test(`QA: ${url}`, async ({ page, request }) => {
       screenshotCounter = 0;
+      const projectName = test.info().project.name;
       const projectMeta = test.info().project.metadata || {};
       const viewport = page.viewportSize();
       const result = {
         url,
-        browser: projectMeta.browser || test.info().project.name,
-        device: projectMeta.device || test.info().project.name,
+        browser: projectMeta.browser || projectName,
+        device: projectMeta.device || projectName,
         viewport: projectMeta.viewport || (viewport ? `${viewport.width}x${viewport.height}` : ''),
         status: 'PASS',
         failReasons: '',
@@ -2415,7 +2500,7 @@ test.describe('WordPress QA suite', () => {
       let fallbackContext = null;
 
       try {
-        const projectName = test.info().project.name;
+        await notifyScanUrlStarted(projectName, index, url);
         const isMobileProject = projectName === 'iphone-14' || projectName === 'ipad';
         const is1272Project = projectName === 'windows-laptop-1272';
         const shouldRunMobileChecks = RUN_MOBILE_CHECKS || isMobileProject;
@@ -3638,6 +3723,7 @@ test.describe('WordPress QA suite', () => {
         result.status = 'ERROR';
         result.error = error.message;
       } finally {
+        await notifyScanUrlCompleted(projectName, index, url);
         if (fallbackContext) {
           await fallbackContext.close().catch(() => {});
         }
