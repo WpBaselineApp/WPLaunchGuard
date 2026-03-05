@@ -121,6 +121,7 @@ jobs:
           set +e
           REPORT_DIR="reports/${{ inputs.client_name }}"
           REPORT_PREFIX=""
+          UPLOADED_COUNT=0
           if [[ ! -d "$REPORT_DIR" ]]; then
             echo "report_prefix=$REPORT_PREFIX" >> "$GITHUB_OUTPUT"
             exit 0
@@ -146,17 +147,27 @@ jobs:
 
           if [[ "${#FILES[@]}" -eq 0 ]]; then
             echo "R2 upload skipped: no report files found."
-            echo "report_prefix=$REPORT_PREFIX" >> "$GITHUB_OUTPUT"
+            echo "report_prefix=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           for file in "${FILES[@]}"; do
             rel="${file#${REPORT_DIR}/}"
             key="${REPORT_PREFIX}/${rel}"
-            npx wrangler r2 object put "${REPORTS_R2_BUCKET}/${key}" \
+            if npx wrangler r2 object put "${REPORTS_R2_BUCKET}/${key}" \
               --file "$file" \
-              --config services/api-worker/wrangler.toml >/dev/null
+              --remote \
+              --config services/api-worker/wrangler.toml >/dev/null; then
+              UPLOADED_COUNT=$((UPLOADED_COUNT + 1))
+            else
+              echo "R2 upload failed for: $rel"
+            fi
           done
+
+          if [[ "$UPLOADED_COUNT" -eq 0 ]]; then
+            echo "report_prefix=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           echo "report_prefix=$REPORT_PREFIX" >> "$GITHUB_OUTPUT"
 
