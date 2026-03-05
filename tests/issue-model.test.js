@@ -32,6 +32,20 @@ test('normalizeIssueEntry downgrades third-party runtime actionability', () => {
   assert.equal(issue.actionability, 'warning');
 });
 
+test('normalizeIssueEntry marks environment/transient issues as warning', () => {
+  const issue = normalizeIssueEntry({
+    Category: 'functionality',
+    Severity: 'major',
+    Title: 'Link Check Timeout (Transient)',
+    Element: 'Timeout 20000ms exceeded',
+    URL: 'https://example.com/',
+    _source: 'links',
+    isEnvironment: true
+  });
+
+  assert.equal(issue.actionability, 'warning');
+});
+
 test('buildIssueSummary dedupes selector variants under canonical key', () => {
   const rows = [
     normalizeIssueEntry({

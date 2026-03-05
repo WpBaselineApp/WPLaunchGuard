@@ -46,7 +46,9 @@ const LINK_CHECK_CONCURRENCY = Number(process.env.LINK_CHECK_CONCURRENCY || 10);
 const LINK_SCOPE = ['internal', 'all'].includes((process.env.LINK_SCOPE || '').toLowerCase())
   ? (process.env.LINK_SCOPE || '').toLowerCase()
   : 'internal';
-const LINK_CHECK_TIMEOUT_MS = Number(process.env.LINK_CHECK_TIMEOUT_MS || 7000);
+const LINK_CHECK_TIMEOUT_MS = Math.max(2000, Number(process.env.LINK_CHECK_TIMEOUT_MS || 20000));
+const LINK_CHECK_RETRIES = Math.max(0, Number(process.env.LINK_CHECK_RETRIES || 2));
+const LINK_CHECK_RETRY_BACKOFF_MS = Math.max(100, Number(process.env.LINK_CHECK_RETRY_BACKOFF_MS || 500));
 const LINK_ALLOWLIST = (process.env.LINK_ALLOWLIST || '')
   .split('|')
   .map((s) => s.trim())
@@ -814,7 +816,7 @@ function isRetryableLinkError(error) {
 
 async function fetchLinkStatus(request, url) {
   let attempt = 0;
-  const maxAttempts = 2;
+  const maxAttempts = LINK_CHECK_RETRIES + 1;
   while (attempt < maxAttempts) {
     try {
       const response = await request.get(url, { timeout: LINK_CHECK_TIMEOUT_MS });
@@ -828,10 +830,18 @@ async function fetchLinkStatus(request, url) {
       if (attempt >= maxAttempts || !isRetryableLinkError(error)) {
         return { kind: 'error', url, status: 0, error: String(error?.message || error || 'Unknown error') };
       }
-      await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      await new Promise((resolve) => setTimeout(resolve, LINK_CHECK_RETRY_BACKOFF_MS * attempt));
     }
   }
   return { kind: 'error', url, status: 0, error: 'Unknown link-check failure' };
+}
+
+function toOrigin(url) {
+  try {
+    return new URL(String(url || '').trim()).origin;
+  } catch {
+    return '';
+  }
 }
 
 async function collectBrokenLinks(page, request) {
@@ -2977,20 +2987,37 @@ test.describe('WordPress QA suite', () => {
           });
         }
 
+        const linkErrorsByOrigin = new Map();
         for (const linkError of linkCheckErrors) {
+          const origin = toOrigin(linkError.url);
+          const key = origin || 'unknown';
+          const bucket = linkErrorsByOrigin.get(key) || [];
+          bucket.push(linkError);
+          linkErrorsByOrigin.set(key, bucket);
+        }
+
+        for (const [origin, originErrors] of linkErrorsByOrigin.entries()) {
+          const firstError = originErrors[0] || {};
+          const sampleText = String(firstError.error || 'Request failed');
+          const sampleUrl = String(firstError.url || '');
+          const affectedLinks = originErrors.length;
+          const reportUrl = origin !== 'unknown' ? origin : sampleUrl;
           addIssue({
             Category: 'functionality',
-            Severity: 'major',
-            Title: 'Link Check Error',
+            Severity: 'minor',
+            Title: 'Link Check Timeout (Transient)',
             Description:
-              'A link could not be verified due to a transient network/timeout error. This may hide real link health.',
-            Element: `${linkError.error || 'Request failed'} | ${linkError.url}`,
+              'Some links could not be verified within timeout from the scan runner. This is usually transient network/CDN/WAF behaviour and does not by itself confirm a broken link.',
+            Element: `${affectedLinks} link(s) timed out for ${reportUrl || 'unknown origin'}. Sample: ${sampleText}${sampleUrl ? ` | ${sampleUrl}` : ''}`,
             Recommendation:
-              'Re-run checks for this URL and verify connectivity/firewall/CDN behavior for automated traffic.',
-            URL: url,
+              'Re-run the scan. If this repeats, check Cloudflare Security Events/WAF/Bot rules and allow automated runner traffic.',
+            URL: reportUrl || url,
             _source: 'links',
-            httpStatus: linkError.status || '',
-            resourceUrl: linkError.url
+            httpStatus: firstError.status || '',
+            resourceUrl: reportUrl || sampleUrl,
+            actionability: 'warning',
+            isEnvironment: true,
+            templateKey: ''
           });
         }
 

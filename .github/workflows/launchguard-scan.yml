@@ -268,6 +268,10 @@ jobs:
           export SCREENSHOTS_MODE="$SCREENSHOTS_MODE"
           export SCREENSHOTS_LIMIT=4
           export SKIP_LIGHTHOUSE="$SKIP_LIGHTHOUSE_FLAG"
+          export LINK_CHECK_TIMEOUT_MS=20000
+          export LINK_CHECK_RETRIES=2
+          export LINK_CHECK_RETRY_BACKOFF_MS=500
+          export LINK_CHECK_CONCURRENCY=6
           export LAUNCHGUARD_SCAN_ID="${{ inputs.scan_id }}"
           export LAUNCHGUARD_PROGRESS_PROJECT="$PROGRESS_PROJECT"
           export LAUNCHGUARD_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
