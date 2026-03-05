@@ -288,9 +288,48 @@ jobs:
             export REPORT_CLIENT_LABEL="$CLIENT_LABEL_INPUT"
           fi
 
+          send_progress_callback() {
+            local current_url="$1"
+            if [[ -z "$current_url" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_URL:-}" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
+              return
+            fi
+
+            local payload
+            payload=$(jq -cn \
+              --arg scan_id "${{ inputs.scan_id }}" \
+              --arg current_url "$current_url" \
+              '{
+                scan_id: $scan_id,
+                status: "running",
+                summary: {
+                  current_url: $current_url,
+                  progress: {
+                    phase: "scanning",
+                    current_url: $current_url
+                  }
+                }
+              }')
+
+            curl -sS -m 8 -X POST "${LAUNCHGUARD_PROGRESS_CALLBACK_URL}" \
+              -H "content-type: application/json" \
+              -H "x-scan-callback-token: ${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN}" \
+              --data "$payload" >/dev/null || true
+          }
+
           echo "Running command: ${CMD[*]}"
-          "${CMD[@]}"
-          EXIT_CODE=$?
+          LAST_PROGRESS_URL=""
+          "${CMD[@]}" 2>&1 | while IFS= read -r line; do
+            echo "$line"
+            if [[ "$line" == *"QA: "* ]]; then
+              CURRENT_URL=$(printf '%s\n' "$line" | grep -Eo 'https?://[^[:space:]]+' | head -n1 || true)
+              CURRENT_URL="${CURRENT_URL%\)}"
+              if [[ -n "$CURRENT_URL" && "$CURRENT_URL" != "$LAST_PROGRESS_URL" ]]; then
+                LAST_PROGRESS_URL="$CURRENT_URL"
+                send_progress_callback "$CURRENT_URL"
+              fi
+            fi
+          done
+          EXIT_CODE=${PIPESTATUS[0]}
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           exit 0
 

@@ -51,6 +51,15 @@ class WPLG_Admin
 
         add_submenu_page(
             'wplaunchguard-dashboard',
+            __('Scan', 'wplaunchguard'),
+            __('Scan', 'wplaunchguard'),
+            'manage_options',
+            'wplaunchguard-scan',
+            [$this, 'render_scan']
+        );
+
+        add_submenu_page(
+            'wplaunchguard-dashboard',
             __('Branding', 'wplaunchguard'),
             __('Branding', 'wplaunchguard'),
             'manage_options',
@@ -75,6 +84,11 @@ class WPLG_Admin
             'wplaunchguard-settings',
             [$this, 'render_settings']
         );
+
+        global $submenu;
+        if (isset($submenu['wplaunchguard-dashboard'][0][0])) {
+            $submenu['wplaunchguard-dashboard'][0][0] = __('Dashboard', 'wplaunchguard');
+        }
     }
 
     public function register_settings(): void
@@ -271,8 +285,8 @@ class WPLG_Admin
 
         if (!empty($_GET['wplg_scan_id'])) {
             $scanId = sanitize_text_field((string) wp_unslash($_GET['wplg_scan_id']));
-            $dashboardUrl = add_query_arg(['page' => 'wplaunchguard-dashboard'], admin_url('admin.php'));
-            echo ' <a href="' . esc_url($dashboardUrl) . '">View latest scan</a> (' . esc_html($scanId) . ')';
+            $scanUrl = add_query_arg(['page' => 'wplaunchguard-scan'], admin_url('admin.php'));
+            echo ' <a href="' . esc_url($scanUrl) . '">View latest scan</a> (' . esc_html($scanId) . ')';
         }
 
         echo '</p></div>';
@@ -315,7 +329,6 @@ class WPLG_Admin
         $limits = $this->fetch_limits($siteId);
         $scans = $this->fetch_scans($siteId, 10);
         $lastScan = $this->fetch_last_scan();
-        $scanDefaults = $this->get_scan_defaults();
         $latestScanRow = [];
         if (!is_wp_error($lastScan) && is_array($lastScan['data']['scan'] ?? null)) {
             $latestScanRow = $lastScan['data']['scan'];
@@ -339,53 +352,6 @@ class WPLG_Admin
         echo '<li><span>Tenant ID</span><code>' . esc_html($this->get_option(self::OPTION_TENANT_ID)) . '</code></li>';
         echo '<li><span>API Base</span><code>' . esc_html($this->get_api_base()) . '</code></li>';
         echo '</ul>';
-        echo '</div>';
-
-        echo '<div class="wplg-card wplg-card-scan-setup">';
-        echo '<h2>Scan Setup</h2>';
-        echo '<p class="wplg-card-intro">Choose the scan profile for this run. You can still override per-page scans from post/page edit screens.</p>';
-        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-scan-config-form">';
-        echo '<input type="hidden" name="action" value="wplg_run_scan" />';
-        wp_nonce_field('wplg_run_scan');
-
-        echo '<div class="wplg-scan-section">';
-        echo '<h3>Scope</h3>';
-        echo '<p><label for="wplg_form_mode"><strong>Form Mode</strong></label><br />';
-        echo '<select id="wplg_form_mode" name="form_mode">';
-        $defaultMode = $this->get_option(self::OPTION_DEFAULT_FORM_MODE, 'dry-run');
-        echo '<option value="dry-run"' . selected($defaultMode, 'dry-run', false) . '>dry-run</option>';
-        echo '<option value="live"' . selected($defaultMode, 'live', false) . '>live</option>';
-        echo '</select></p>';
-        echo '<p><label for="wplg_sitemap_url"><strong>Sitemap URL (optional)</strong></label><br />';
-        echo '<input class="regular-text" type="url" id="wplg_sitemap_url" name="sitemap_url" placeholder="https://example.com/sitemap_index.xml" /></p>';
-        echo '</div>';
-
-        echo '<div class="wplg-scan-section">';
-        echo '<h3>Performance/Coverage</h3>';
-        $this->render_toggle_field('scan_options[quick_scan_enabled]', 'wplg_quick_scan', !empty($scanDefaults['quick_scan_enabled']), 'Quick scan', 'Runs a faster reduced project set for quicker feedback (example: ~2–4 min vs full run).');
-        $this->render_toggle_field('scan_options[responsive_enabled]', 'wplg_responsive_scan', !empty($scanDefaults['responsive_enabled']), 'Responsive scan', 'Tests mobile/tablet layouts for breakpoint issues (example: overlapping buttons on 390px width).');
-
-        $viewportVisibleClass = !empty($scanDefaults['responsive_enabled']) ? '' : ' is-hidden';
-        echo '<div class="wplg-field' . esc_attr($viewportVisibleClass) . '" data-wplg-viewport-wrap="dashboard">';
-        echo '<label for="wplg_viewport_preset"><strong>Viewport preset</strong></label>' . $this->render_help_tip('Choose which device classes to test: Desktop, Mobile, or Both.') . '<br />';
-        echo '<select id="wplg_viewport_preset" name="scan_options[viewport_preset]" data-wplg-viewport-select="dashboard">';
-        echo '<option value="desktop"' . selected($scanDefaults['viewport_preset'], 'desktop', false) . '>Desktop</option>';
-        echo '<option value="mobile"' . selected($scanDefaults['viewport_preset'], 'mobile', false) . '>Mobile</option>';
-        echo '<option value="both"' . selected($scanDefaults['viewport_preset'], 'both', false) . '>Both</option>';
-        echo '</select>';
-        echo '</div>';
-        echo '</div>';
-
-        echo '<div class="wplg-scan-section">';
-        echo '<h3>Evidence</h3>';
-        $this->render_toggle_field('scan_options[evidence_enabled]', 'wplg_evidence_enabled', !empty($scanDefaults['evidence_enabled']), 'Evidence', 'Captures screenshot proof for detected issues (example: missing alt text evidence).');
-        $this->render_toggle_field('scan_options[lighthouse_enabled]', 'wplg_lighthouse_enabled', !empty($scanDefaults['lighthouse_enabled']), 'Lighthouse', 'Runs Lighthouse audits for performance/SEO/accessibility metrics (example: LCP, CLS, SEO score).');
-        echo '</div>';
-
-        echo '<p class="wplg-summary-line"><strong>Selected profile summary:</strong> <span id="wplg-dashboard-summary-text"></span></p>';
-
-        submit_button('Start Scan', 'primary wplg-primary-cta', 'submit', false);
-        echo '</form>';
         echo '</div>';
 
         echo '</div>';
@@ -416,131 +382,75 @@ class WPLG_Admin
         }
         echo '</div>';
 
-        echo '<div class="wplg-card wplg-card-latest">';
-        echo '<h2>Latest Scan</h2>';
-        if (is_wp_error($lastScan)) {
-            echo '<p>' . esc_html($lastScan->get_error_message()) . '</p>';
-        } elseif (empty($latestScanRow)) {
-            echo '<p>No scans started yet.</p>';
-        } else {
-            $scan = $latestScanRow;
-            $scanSummary = $this->extract_scan_summary($scan);
-            $scanStatus = sanitize_key((string) ($scan['status'] ?? ''));
-            echo '<ul class="wplg-kv-list">';
-            echo '<li><span>ID</span><code>' . esc_html((string) ($scan['id'] ?? 'n/a')) . '</code></li>';
-            echo '<li><span>Status</span>' . $this->render_status_pill((string) ($scan['status'] ?? 'n/a')) . '</li>';
-            echo '<li><span>Created</span><strong>' . esc_html((string) ($scan['created_at'] ?? 'n/a')) . '</strong></li>';
-            echo '<li><span>Completed</span><strong>' . esc_html((string) ($scan['completed_at'] ?? 'pending')) . '</strong></li>';
-
-            $targetUrl = sanitize_text_field((string) ($scan['target_url'] ?? ($scanSummary['target_url'] ?? '')));
-            if ($targetUrl !== '') {
-                echo '<li><span>Target URL</span><span class="wplg-break-word"><code>' . esc_html($targetUrl) . '</code></span></li>';
-            }
-
-            $scanOptions = $this->extract_scan_options($scan, $scanSummary);
-            if (!empty($scanOptions)) {
-                echo '<li><span>Profile</span><strong>' . esc_html($this->format_scan_options_summary($scanOptions)) . '</strong></li>';
-            }
-            echo '</ul>';
-
-            $progressPercent = $this->estimate_scan_progress($scanStatus, $scanSummary);
-            echo '<p><strong>Progress:</strong> ' . esc_html((string) $progressPercent) . '%</p>';
-            echo '<div class="wplg-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $progressPercent) . '">';
-            echo '<span style="width:' . esc_attr((string) $progressPercent) . '%"></span>';
-            echo '</div>';
-
-            $currentUrl = $this->extract_current_scan_url($scanSummary, $scan);
-            if ($currentUrl !== '') {
-                echo '<p><strong>Current URL:</strong> <code class="wplg-break-word">' . esc_html($currentUrl) . '</code></p>';
-            }
-
-            $etaText = $this->get_scan_eta_text($scanStatus);
-            if ($etaText !== '') {
-                echo '<p class="description">' . esc_html($etaText) . '</p>';
-            }
-
-            if ($this->is_scan_in_progress($scanStatus)) {
-                echo '<p class="description">Live scan progress is available in the tracker modal while your scan is running.</p>';
-                echo '<div class="wplg-actions">';
-                echo '<button type="button" class="button" data-wplg-open-scan-modal="1">Track Live Scan</button>';
-                echo '<a class="button" href="' . esc_url(admin_url('admin.php?page=wplaunchguard-dashboard')) . '">Refresh Now</a>';
-                echo '</div>';
-            }
-
-            $issuesTotal = $this->extract_issues_total($scanSummary);
-            if ($issuesTotal !== null) {
-                echo '<p><strong>Issues:</strong> ' . esc_html((string) $issuesTotal) . '</p>';
-            }
-
-            $severityText = $this->format_severity_counts($scanSummary);
-            if ($severityText !== '') {
-                echo '<p><strong>Severity:</strong> ' . esc_html($severityText) . '</p>';
-            }
-
-            if (!empty($scanSummary['run_state'])) {
-                echo '<p><strong>Run State:</strong> ' . esc_html((string) $scanSummary['run_state']) . '</p>';
-            }
-
-            echo '<div class="wplg-actions">';
-            if (!empty($scanSummary['report_index_url'])) {
-                echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['report_index_url']) . '">View Report</a>';
-            }
-
-            if (!empty($scanSummary['workflow_url'])) {
-                echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['workflow_url']) . '">Open GitHub Run</a>';
-            }
-
-            if (!empty($scanSummary['reports_artifact_url'])) {
-                echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['reports_artifact_url']) . '">Download Report ZIP</a>';
-            }
-            echo '</div>';
-
-            $evidenceText = $this->format_evidence_counts($scanSummary);
-            if ($evidenceText !== '') {
-                echo '<p><strong>Evidence:</strong> ' . esc_html($evidenceText) . '</p>';
-            }
-        }
-        echo '</div>';
+        $this->render_latest_scan_card($lastScan, $latestScanRow);
         echo '</div>';
 
-        echo '<div class="wplg-card wplg-card-recent">';
-        echo '<h2>Recent Scans</h2>';
-        if (is_wp_error($scans)) {
-            echo '<p>' . esc_html($scans->get_error_message()) . '</p>';
-        } else {
-            $rows = $scans['data']['scans'] ?? [];
-            if (empty($rows)) {
-                echo '<p>No scan history yet.</p>';
-            } else {
-                echo '<div class="wplg-table-wrap">';
-                echo '<table class="widefat striped wplg-table">';
-                echo '<thead><tr><th>Scan ID</th><th>Status</th><th>Mode</th><th>Issues</th><th>Report</th><th>Created</th></tr></thead><tbody>';
-                foreach ($rows as $row) {
-                    $rowSummary = $this->extract_scan_summary($row);
-                    $rowIssues = $this->extract_issues_total($rowSummary);
-                    $reportUrl = (string) ($rowSummary['report_index_url'] ?? ($rowSummary['workflow_url'] ?? ($rowSummary['reports_artifact_url'] ?? '')));
-                    echo '<tr>';
-                    echo '<td>' . esc_html((string) ($row['id'] ?? '')) . '</td>';
-                    echo '<td>' . $this->render_status_pill((string) ($row['status'] ?? '')) . '</td>';
-                    echo '<td>' . esc_html((string) ($row['form_mode'] ?? '')) . '</td>';
-                    echo '<td>' . esc_html($rowIssues !== null ? (string) $rowIssues : 'n/a') . '</td>';
-                    if ($reportUrl !== '') {
-                        echo '<td><a target="_blank" rel="noopener" href="' . esc_url($reportUrl) . '">Open</a></td>';
-                    } else {
-                        echo '<td>n/a</td>';
-                    }
-                    echo '<td>' . esc_html((string) ($row['created_at'] ?? '')) . '</td>';
-                    echo '</tr>';
-                }
-                echo '</tbody></table>';
-                echo '</div>';
-            }
-        }
-        echo '</div>';
+        $this->render_recent_scans_card($scans);
         echo '</div>';
 
         $this->render_scan_progress_modal($modalScanId, $shouldAutoOpenModal);
 
+        $this->render_scan_form_script();
+        echo '</div>';
+    }
+
+    public function render_scan(): void
+    {
+        $siteId = $this->get_option(self::OPTION_SITE_ID);
+        $connected = $siteId !== '';
+        $siteHost = wp_parse_url(home_url('/'), PHP_URL_HOST);
+
+        echo '<div class="wrap wplg-wrap wplg-scan-page">';
+        echo '<div class="wplg-page-header">';
+        echo '<div class="wplg-page-title">';
+        echo '<h1>Scan</h1>';
+        echo '<p class="wplg-page-subtitle">Configure and run site scans with live tracking.</p>';
+        echo '</div>';
+        echo '<div class="wplg-page-meta">';
+        echo '<span class="wplg-badge ' . ($connected ? 'is-success' : 'is-warning') . '">' . ($connected ? 'Connected' : 'Not Connected') . '</span>';
+        if (!empty($siteHost)) {
+            echo '<span class="wplg-badge">' . esc_html((string) $siteHost) . '</span>';
+        }
+        echo '</div>';
+        echo '</div>';
+
+        if (!$connected) {
+            echo '<div class="wplg-card wplg-card-hero">';
+            echo '<h2>Connect This Site</h2>';
+            echo '<p>Register this WordPress site with your LaunchGuard API to enable scans and white-label controls.</p>';
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+            echo '<input type="hidden" name="action" value="wplg_register_site" />';
+            wp_nonce_field('wplg_register_site');
+            submit_button('Register Site');
+            echo '</form>';
+            echo '</div>';
+            echo '</div>';
+            return;
+        }
+
+        $scanDefaults = $this->get_scan_defaults();
+        $scans = $this->fetch_scans($siteId, 10);
+        $lastScan = $this->fetch_last_scan();
+        $latestScanRow = [];
+        if (!is_wp_error($lastScan) && is_array($lastScan['data']['scan'] ?? null)) {
+            $latestScanRow = $lastScan['data']['scan'];
+        }
+        $latestScanId = sanitize_text_field((string) ($latestScanRow['id'] ?? ''));
+        $noticeStatus = sanitize_key((string) wp_unslash($_GET['wplg_notice'] ?? ''));
+        $modalScanId = sanitize_text_field((string) wp_unslash($_GET['wplg_scan_id'] ?? ''));
+        if ($modalScanId === '' && $latestScanId !== '') {
+            $modalScanId = $latestScanId;
+        }
+        $latestStatus = sanitize_key((string) ($latestScanRow['status'] ?? ''));
+        $shouldAutoOpenModal = $modalScanId !== '' && ($noticeStatus === 'success' || $this->is_scan_in_progress($latestStatus));
+
+        echo '<div class="wplg-grid">';
+        $this->render_scan_setup_card($scanDefaults);
+        $this->render_latest_scan_card($lastScan, $latestScanRow);
+        echo '</div>';
+
+        $this->render_recent_scans_card($scans);
+        $this->render_scan_progress_modal($modalScanId, $shouldAutoOpenModal);
         $this->render_scan_form_script();
         echo '</div>';
     }
@@ -752,7 +662,7 @@ class WPLG_Admin
 
         $siteId = $this->get_option(self::OPTION_SITE_ID);
         if ($siteId === '') {
-            $this->redirect_with_notice('wplaunchguard-dashboard', 'error', 'Connect the site before running scans.');
+            $this->redirect_with_notice('wplaunchguard-scan', 'error', 'Connect the site before running scans.');
         }
 
         $formMode = $this->sanitize_form_mode(sanitize_text_field((string) wp_unslash($_POST['form_mode'] ?? 'dry-run')));
@@ -769,7 +679,7 @@ class WPLG_Admin
             'trigger' => 'manual',
             'scan_options' => $scanOptions,
             'source_context' => [
-                'source' => 'dashboard'
+                'source' => 'scan'
             ]
         ];
         if ($sitemapUrl !== '') {
@@ -778,7 +688,7 @@ class WPLG_Admin
 
         $response = $this->api_request('POST', '/v1/scans', $payload);
         if (is_wp_error($response)) {
-            $this->redirect_with_notice('wplaunchguard-dashboard', 'error', $response->get_error_message());
+            $this->redirect_with_notice('wplaunchguard-scan', 'error', $response->get_error_message());
         }
 
         $scanId = sanitize_text_field((string) ($response['data']['scan_id'] ?? ''));
@@ -786,7 +696,7 @@ class WPLG_Admin
             update_option(self::OPTION_LAST_SCAN_ID, $scanId);
         }
 
-        $this->redirect_with_notice('wplaunchguard-dashboard', 'success', 'Scan queued successfully.', $scanId);
+        $this->redirect_with_notice('wplaunchguard-scan', 'success', 'Scan queued successfully.', $scanId);
     }
 
     public function handle_run_page_scan(): void
@@ -1035,6 +945,8 @@ class WPLG_Admin
             $summary['last_completed_url'] ?? '',
             $scanRow['target_url'] ?? '',
             $summary['target_url'] ?? '',
+            $summary['dispatch']['target_url'] ?? '',
+            $summary['dispatch']['site_url'] ?? '',
             $sampleUrl
         ];
 
@@ -1235,6 +1147,193 @@ class WPLG_Admin
         if (!empty($summary['workflow_url'])) {
             echo '<p><a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $summary['workflow_url']) . '">Open GitHub Run</a></p>';
         }
+    }
+
+    private function render_scan_setup_card(array $scanDefaults): void
+    {
+        echo '<div class="wplg-card wplg-card-scan-setup">';
+        echo '<h2>Scan Setup</h2>';
+        echo '<p class="wplg-card-intro">Choose the scan profile for this run. You can still override per-page scans from post/page edit screens.</p>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-scan-config-form">';
+        echo '<input type="hidden" name="action" value="wplg_run_scan" />';
+        wp_nonce_field('wplg_run_scan');
+
+        echo '<div class="wplg-scan-section">';
+        echo '<h3>Scope</h3>';
+        echo '<p><label for="wplg_form_mode"><strong>Form Mode</strong></label><br />';
+        echo '<select id="wplg_form_mode" name="form_mode">';
+        $defaultMode = $this->get_option(self::OPTION_DEFAULT_FORM_MODE, 'dry-run');
+        echo '<option value="dry-run"' . selected($defaultMode, 'dry-run', false) . '>dry-run</option>';
+        echo '<option value="live"' . selected($defaultMode, 'live', false) . '>live</option>';
+        echo '</select></p>';
+        echo '<p><label for="wplg_sitemap_url"><strong>Sitemap URL (optional)</strong></label><br />';
+        echo '<input class="regular-text" type="url" id="wplg_sitemap_url" name="sitemap_url" placeholder="https://example.com/sitemap_index.xml" /></p>';
+        echo '</div>';
+
+        echo '<div class="wplg-scan-section">';
+        echo '<h3>Performance/Coverage</h3>';
+        $this->render_toggle_field('scan_options[quick_scan_enabled]', 'wplg_quick_scan', !empty($scanDefaults['quick_scan_enabled']), 'Quick scan', 'Runs a faster reduced project set for quicker feedback (example: ~2–4 min vs full run).');
+        $this->render_toggle_field('scan_options[responsive_enabled]', 'wplg_responsive_scan', !empty($scanDefaults['responsive_enabled']), 'Responsive scan', 'Tests mobile/tablet layouts for breakpoint issues (example: overlapping buttons on 390px width).');
+
+        $viewportVisibleClass = !empty($scanDefaults['responsive_enabled']) ? '' : ' is-hidden';
+        echo '<div class="wplg-field' . esc_attr($viewportVisibleClass) . '" data-wplg-viewport-wrap="dashboard">';
+        echo '<label for="wplg_viewport_preset"><strong>Viewport preset</strong></label>' . $this->render_help_tip('Choose which device classes to test: Desktop, Mobile, or Both.') . '<br />';
+        echo '<select id="wplg_viewport_preset" name="scan_options[viewport_preset]" data-wplg-viewport-select="dashboard">';
+        echo '<option value="desktop"' . selected($scanDefaults['viewport_preset'], 'desktop', false) . '>Desktop</option>';
+        echo '<option value="mobile"' . selected($scanDefaults['viewport_preset'], 'mobile', false) . '>Mobile</option>';
+        echo '<option value="both"' . selected($scanDefaults['viewport_preset'], 'both', false) . '>Both</option>';
+        echo '</select>';
+        echo '</div>';
+        echo '</div>';
+
+        echo '<div class="wplg-scan-section">';
+        echo '<h3>Evidence</h3>';
+        $this->render_toggle_field('scan_options[evidence_enabled]', 'wplg_evidence_enabled', !empty($scanDefaults['evidence_enabled']), 'Evidence', 'Captures screenshot proof for detected issues (example: missing alt text evidence).');
+        $this->render_toggle_field('scan_options[lighthouse_enabled]', 'wplg_lighthouse_enabled', !empty($scanDefaults['lighthouse_enabled']), 'Lighthouse', 'Runs Lighthouse audits for performance/SEO/accessibility metrics (example: LCP, CLS, SEO score).');
+        echo '</div>';
+
+        echo '<p class="wplg-summary-line"><strong>Selected profile summary:</strong> <span id="wplg-dashboard-summary-text"></span></p>';
+
+        submit_button('Start Scan', 'primary wplg-primary-cta', 'submit', false);
+        echo '</form>';
+        echo '</div>';
+    }
+
+    private function render_latest_scan_card($lastScan, array $latestScanRow): void
+    {
+        echo '<div class="wplg-card wplg-card-latest">';
+        echo '<h2>Latest Scan</h2>';
+        if (is_wp_error($lastScan)) {
+            echo '<p>' . esc_html($lastScan->get_error_message()) . '</p>';
+            echo '</div>';
+            return;
+        }
+
+        if (empty($latestScanRow)) {
+            echo '<p>No scans started yet.</p>';
+            echo '</div>';
+            return;
+        }
+
+        $scan = $latestScanRow;
+        $scanSummary = $this->extract_scan_summary($scan);
+        $scanStatus = sanitize_key((string) ($scan['status'] ?? ''));
+        echo '<ul class="wplg-kv-list">';
+        echo '<li><span>ID</span><code>' . esc_html((string) ($scan['id'] ?? 'n/a')) . '</code></li>';
+        echo '<li><span>Status</span>' . $this->render_status_pill((string) ($scan['status'] ?? 'n/a')) . '</li>';
+        echo '<li><span>Created</span><strong>' . esc_html((string) ($scan['created_at'] ?? 'n/a')) . '</strong></li>';
+        echo '<li><span>Completed</span><strong>' . esc_html((string) ($scan['completed_at'] ?? 'pending')) . '</strong></li>';
+
+        $targetUrl = sanitize_text_field((string) ($scan['target_url'] ?? ($scanSummary['target_url'] ?? '')));
+        if ($targetUrl !== '') {
+            echo '<li><span>Target URL</span><span class="wplg-break-word"><code>' . esc_html($targetUrl) . '</code></span></li>';
+        }
+
+        $scanOptions = $this->extract_scan_options($scan, $scanSummary);
+        if (!empty($scanOptions)) {
+            echo '<li><span>Profile</span><strong>' . esc_html($this->format_scan_options_summary($scanOptions)) . '</strong></li>';
+        }
+        echo '</ul>';
+
+        $progressPercent = $this->estimate_scan_progress($scanStatus, $scanSummary);
+        echo '<p><strong>Progress:</strong> ' . esc_html((string) $progressPercent) . '%</p>';
+        echo '<div class="wplg-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $progressPercent) . '">';
+        echo '<span style="width:' . esc_attr((string) $progressPercent) . '%"></span>';
+        echo '</div>';
+
+        $currentUrl = $this->extract_current_scan_url($scanSummary, $scan);
+        if ($currentUrl !== '') {
+            echo '<p><strong>Current URL:</strong> <code class="wplg-break-word">' . esc_html($currentUrl) . '</code></p>';
+        }
+
+        $etaText = $this->get_scan_eta_text($scanStatus);
+        if ($etaText !== '') {
+            echo '<p class="description">' . esc_html($etaText) . '</p>';
+        }
+
+        if ($this->is_scan_in_progress($scanStatus)) {
+            echo '<p class="description">Live scan progress is available in the tracker modal while your scan is running.</p>';
+            echo '<div class="wplg-actions">';
+            echo '<button type="button" class="button" data-wplg-open-scan-modal="1">Track Live Scan</button>';
+            echo '<a class="button" href="' . esc_url(admin_url('admin.php?page=wplaunchguard-scan')) . '">Refresh Now</a>';
+            echo '</div>';
+        }
+
+        $issuesTotal = $this->extract_issues_total($scanSummary);
+        if ($issuesTotal !== null) {
+            echo '<p><strong>Issues:</strong> ' . esc_html((string) $issuesTotal) . '</p>';
+        }
+
+        $severityText = $this->format_severity_counts($scanSummary);
+        if ($severityText !== '') {
+            echo '<p><strong>Severity:</strong> ' . esc_html($severityText) . '</p>';
+        }
+
+        if (!empty($scanSummary['run_state'])) {
+            echo '<p><strong>Run State:</strong> ' . esc_html((string) $scanSummary['run_state']) . '</p>';
+        }
+
+        echo '<div class="wplg-actions">';
+        if (!empty($scanSummary['report_index_url'])) {
+            echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['report_index_url']) . '">View Report</a>';
+        }
+
+        if (!empty($scanSummary['workflow_url'])) {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['workflow_url']) . '">Open GitHub Run</a>';
+        }
+
+        if (!empty($scanSummary['reports_artifact_url'])) {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['reports_artifact_url']) . '">Download Report ZIP</a>';
+        }
+        echo '</div>';
+
+        $evidenceText = $this->format_evidence_counts($scanSummary);
+        if ($evidenceText !== '') {
+            echo '<p><strong>Evidence:</strong> ' . esc_html($evidenceText) . '</p>';
+        }
+        echo '</div>';
+    }
+
+    private function render_recent_scans_card($scans): void
+    {
+        echo '<div class="wplg-card wplg-card-recent">';
+        echo '<h2>Recent Scans</h2>';
+        if (is_wp_error($scans)) {
+            echo '<p>' . esc_html($scans->get_error_message()) . '</p>';
+            echo '</div>';
+            return;
+        }
+
+        $rows = $scans['data']['scans'] ?? [];
+        if (empty($rows)) {
+            echo '<p>No scan history yet.</p>';
+            echo '</div>';
+            return;
+        }
+
+        echo '<div class="wplg-table-wrap">';
+        echo '<table class="widefat striped wplg-table">';
+        echo '<thead><tr><th>Scan ID</th><th>Status</th><th>Mode</th><th>Issues</th><th>Report</th><th>Created</th></tr></thead><tbody>';
+        foreach ($rows as $row) {
+            $rowSummary = $this->extract_scan_summary($row);
+            $rowIssues = $this->extract_issues_total($rowSummary);
+            $reportUrl = (string) ($rowSummary['report_index_url'] ?? ($rowSummary['workflow_url'] ?? ($rowSummary['reports_artifact_url'] ?? '')));
+            echo '<tr>';
+            echo '<td>' . esc_html((string) ($row['id'] ?? '')) . '</td>';
+            echo '<td>' . $this->render_status_pill((string) ($row['status'] ?? '')) . '</td>';
+            echo '<td>' . esc_html((string) ($row['form_mode'] ?? '')) . '</td>';
+            echo '<td>' . esc_html($rowIssues !== null ? (string) $rowIssues : 'n/a') . '</td>';
+            if ($reportUrl !== '') {
+                echo '<td><a target="_blank" rel="noopener" href="' . esc_url($reportUrl) . '">Open</a></td>';
+            } else {
+                echo '<td>n/a</td>';
+            }
+            echo '<td>' . esc_html((string) ($row['created_at'] ?? '')) . '</td>';
+            echo '</tr>';
+        }
+        echo '</tbody></table>';
+        echo '</div>';
+        echo '</div>';
     }
 
     private function render_toggle_field(string $name, string $id, bool $checkedValue, string $label, string $tooltip): void
