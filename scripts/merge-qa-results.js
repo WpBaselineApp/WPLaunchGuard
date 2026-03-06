@@ -38,11 +38,22 @@ const ISSUES_JSON = path.join(reportsDir, 'issues.json');
 const BLOCKED_SAMPLES_JSON = path.join(reportsDir, 'blocked_samples.json');
 const URL_SUMMARY_CSV = path.join(reportsDir, 'url_summary.csv');
 const RUN_META_JSON = path.join(reportsDir, 'run_meta.json');
+const RUN_STATE_MARKER_JSON = path.join(reportsDir, '.scan_state.json');
 
 function atomicWrite(filePath, data, encoding = 'utf8') {
   const tmpPath = `${filePath}.tmp-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   fs.writeFileSync(tmpPath, data, encoding);
   fs.renameSync(tmpPath, filePath);
+}
+
+function safeReadJson(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
 }
 
 const RESULTS_HEADERS = [
@@ -375,6 +386,8 @@ function parseNumber(value) {
 
 function writeRunMeta({
   state,
+  stateReason,
+  stateTriggeredAt,
   shardFiles,
   totalInputUrls,
   resultsRows,
@@ -400,7 +413,13 @@ function writeRunMeta({
         .filter(Boolean),
       workers: parseNumber(process.env.QA_WORKERS),
       interrupted: parseBoolean(process.env.QA_INTERRUPTED),
-      playwrightExitCode: parseNumber(process.env.PLAYWRIGHT_EXIT_CODE)
+      playwrightExitCode: parseNumber(process.env.PLAYWRIGHT_EXIT_CODE),
+      safety: {
+        mode: String(process.env.QA_SAFETY_MODE || 'strict'),
+        stateReason: String(stateReason || ''),
+        triggeredAt: String(stateTriggeredAt || ''),
+        triggered: state === 'protected_stopped' || state === 'stalled'
+      }
     },
     merge: {
       status: 'ok',
@@ -452,11 +471,19 @@ function main() {
   const allIssues = [];
   const allBlockedSamples = [];
   let totalInputUrls = 0;
+  let shardRunState = '';
+  let shardRunStateReason = '';
+  let shardRunStateTriggeredAt = '';
 
   selectedShards.forEach(({ parsed }) => {
     if (Array.isArray(parsed.results)) allResults.push(...parsed.results);
     if (Array.isArray(parsed.issues)) allIssues.push(...parsed.issues.map((issue) => normalizeIssue(issue)));
     if (Array.isArray(parsed.blockedSamples)) allBlockedSamples.push(...parsed.blockedSamples);
+    if (!shardRunState && parsed.runState) {
+      shardRunState = String(parsed.runState || '').trim().toLowerCase();
+      shardRunStateReason = String(parsed.runStateReason || '').trim();
+      shardRunStateTriggeredAt = String(parsed.runStateTriggeredAt || '').trim();
+    }
     totalInputUrls = Math.max(totalInputUrls, Number(parsed.totalInputUrls || 0));
   });
 
@@ -478,9 +505,15 @@ function main() {
   writeUrlSummary(urlSummaryRows);
 
   const interrupted = parseBoolean(process.env.QA_INTERRUPTED);
+  const markerState = safeReadJson(RUN_STATE_MARKER_JSON) || {};
+  const forcedRunState = String(process.env.QA_RUN_STATE || shardRunState || markerState.state || '').trim().toLowerCase();
+  const forcedRunReason = String(process.env.QA_RUN_STATE_REASON || shardRunStateReason || markerState.reason || '').trim();
+  const forcedRunTriggeredAt = String(shardRunStateTriggeredAt || markerState.generatedAt || '').trim();
   const uniqueUrls = new Set(results.map((row) => row.url).filter(Boolean)).size;
   let state = 'complete';
-  if (interrupted) {
+  if (forcedRunState === 'protected_stopped' || forcedRunState === 'stalled') {
+    state = forcedRunState;
+  } else if (interrupted) {
     state = 'interrupted';
   } else if (results.length === 0) {
     state = 'partial';
@@ -490,6 +523,8 @@ function main() {
 
   writeRunMeta({
     state,
+    stateReason: forcedRunReason,
+    stateTriggeredAt: forcedRunTriggeredAt,
     shardFiles: selectedShards.length,
     totalInputUrls: totalInputUrls || uniqueUrls,
     resultsRows: results.length,

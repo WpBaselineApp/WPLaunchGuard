@@ -284,6 +284,12 @@
   color: #18344e;
 }
 
+.wplg-wrap .button.is-disabled,
+.wplg-wrap .button[aria-disabled="true"] {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
 .wplg-primary-cta {
   width: 100%;
   margin-top: 6px !important;
@@ -426,6 +432,13 @@
   color: #8f2424;
 }
 
+.wplg-status-pill.status-stalled,
+.wplg-status-pill.status-protected_stopped {
+  border-color: #e7c494;
+  background: #fff7ec;
+  color: #8e5a00;
+}
+
 .wplg-metabox-options {
   margin-top: 10px;
 }
@@ -439,6 +452,26 @@
 
 .wplg-break-word {
   overflow-wrap: anywhere;
+}
+
+.wplg-inline-tracker {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid #d8e5f3;
+  border-radius: 10px;
+  background: #f8fbff;
+}
+
+.wplg-inline-tracker p {
+  margin: 0 0 8px;
+}
+
+.wplg-inline-tracker .wplg-actions {
+  margin-top: 12px;
+}
+
+.wplg-hidden-form {
+  display: none !important;
 }
 
 .is-hidden {
@@ -497,6 +530,7 @@
   border-bottom: 0;
   border-top: 1px solid #e2ebf5;
   justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 .wplg-modal__header h2 {

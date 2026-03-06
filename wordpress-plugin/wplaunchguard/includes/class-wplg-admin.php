@@ -27,9 +27,12 @@ class WPLG_Admin
         add_action('admin_post_wplg_register_site', [$this, 'handle_register_site']);
         add_action('admin_post_wplg_run_scan', [$this, 'handle_run_scan']);
         add_action('admin_post_wplg_run_page_scan', [$this, 'handle_run_page_scan']);
+        add_action('admin_post_wplg_cancel_scan', [$this, 'handle_cancel_scan']);
         add_action('admin_post_wplg_save_branding', [$this, 'handle_save_branding']);
         add_action('admin_post_wplg_start_checkout', [$this, 'handle_start_checkout']);
         add_action('wp_ajax_wplg_poll_scan', [$this, 'handle_poll_scan']);
+        add_action('wp_ajax_wplg_cancel_scan', [$this, 'handle_cancel_scan_ajax']);
+        add_action('admin_bar_menu', [$this, 'render_active_scan_toolbar_chip'], 100);
 
         add_action('add_meta_boxes', [$this, 'register_scan_metaboxes']);
         add_action('save_post', [$this, 'handle_save_scan_metabox'], 10, 2);
@@ -274,6 +277,7 @@ class WPLG_Admin
         }
 
         if (!isset($_GET['wplg_notice']) || !isset($_GET['wplg_message'])) {
+            $this->render_active_scan_notice();
             return;
         }
 
@@ -289,6 +293,90 @@ class WPLG_Admin
             echo ' <a href="' . esc_url($scanUrl) . '">View latest scan</a> (' . esc_html($scanId) . ')';
         }
 
+        echo '</p></div>';
+
+        $this->render_active_scan_notice();
+    }
+
+    public function render_active_scan_toolbar_chip(WP_Admin_Bar $adminBar): void
+    {
+        if (!is_admin() || !current_user_can('manage_options')) {
+            return;
+        }
+
+        $lastScan = $this->fetch_last_scan();
+        if (is_wp_error($lastScan) || empty($lastScan) || !is_array($lastScan['data']['scan'] ?? null)) {
+            return;
+        }
+
+        $scan = $lastScan['data']['scan'];
+        $status = sanitize_key((string) ($scan['status'] ?? ''));
+        if (!$this->is_scan_in_progress($status)) {
+            return;
+        }
+
+        $summary = $this->extract_scan_summary($scan);
+        $progress = $this->estimate_scan_progress($status, $summary);
+        $scanId = sanitize_text_field((string) ($scan['id'] ?? ''));
+        $href = add_query_arg(
+            [
+                'page' => 'wplaunchguard-scan',
+                'wplg_scan_id' => $scanId,
+                'wplg_open_modal' => '1'
+            ],
+            admin_url('admin.php')
+        );
+
+        $adminBar->add_node([
+            'id' => 'wplg-active-scan',
+            'title' => sprintf('LaunchGuard Scan %d%%', $progress),
+            'href' => esc_url($href),
+            'meta' => [
+                'title' => 'Open LaunchGuard scan tracker'
+            ]
+        ]);
+    }
+
+    private function render_active_scan_notice(): void
+    {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        if (isset($_GET['page']) && sanitize_key((string) wp_unslash($_GET['page'])) === 'wplaunchguard-scan') {
+            return;
+        }
+
+        $lastScan = $this->fetch_last_scan();
+        if (is_wp_error($lastScan) || empty($lastScan) || !is_array($lastScan['data']['scan'] ?? null)) {
+            return;
+        }
+
+        $scan = $lastScan['data']['scan'];
+        $status = sanitize_key((string) ($scan['status'] ?? ''));
+        if (!$this->is_scan_in_progress($status)) {
+            return;
+        }
+
+        $summary = $this->extract_scan_summary($scan);
+        $scanId = sanitize_text_field((string) ($scan['id'] ?? ''));
+        $progress = $this->estimate_scan_progress($status, $summary);
+        $currentUrl = $this->extract_current_scan_url($summary, $scan);
+        $scanUrl = add_query_arg(
+            [
+                'page' => 'wplaunchguard-scan',
+                'wplg_scan_id' => $scanId,
+                'wplg_open_modal' => '1'
+            ],
+            admin_url('admin.php')
+        );
+
+        echo '<div class="notice notice-info is-dismissible wplg-active-scan-notice"><p>';
+        echo '<strong>LaunchGuard active scan:</strong> ' . esc_html($progress) . '% complete.';
+        if ($currentUrl !== '') {
+            echo ' <code>' . esc_html($currentUrl) . '</code>';
+        }
+        echo ' <a href="' . esc_url($scanUrl) . '">Open Live Tracker</a>';
         echo '</p></div>';
     }
 
@@ -425,15 +513,17 @@ class WPLG_Admin
             $modalScanId = $latestScanId;
         }
         $latestStatus = sanitize_key((string) ($latestScanRow['status'] ?? ''));
-        $shouldAutoOpenModal = $modalScanId !== '' && ($noticeStatus === 'success' || $this->is_scan_in_progress($latestStatus));
+        $forceOpenModal = !empty($_GET['wplg_open_modal']) && sanitize_key((string) wp_unslash($_GET['wplg_open_modal'])) === '1';
+        $shouldAutoOpenModal = $modalScanId !== '' && ($forceOpenModal || $noticeStatus === 'success' || $this->is_scan_in_progress($latestStatus));
+        $lastCompletedReportUrl = $this->find_last_completed_report_url($scans);
 
         echo '<div class="wplg-grid">';
         $this->render_scan_setup_card($scanDefaults);
-        $this->render_latest_scan_card($lastScan, $latestScanRow);
+        $this->render_latest_scan_card($lastScan, $latestScanRow, $lastCompletedReportUrl);
         echo '</div>';
 
         $this->render_recent_scans_card($scans);
-        $this->render_scan_progress_modal($modalScanId, $shouldAutoOpenModal);
+        $this->render_scan_progress_modal($modalScanId, $shouldAutoOpenModal, $lastCompletedReportUrl);
         $this->render_scan_form_script();
         echo '</div>';
     }
@@ -662,7 +752,7 @@ class WPLG_Admin
             'trigger' => 'manual',
             'scan_options' => $scanOptions,
             'source_context' => [
-                'source' => 'scan'
+                'source' => 'dashboard'
             ]
         ];
         if ($sitemapUrl !== '') {
@@ -671,7 +761,7 @@ class WPLG_Admin
 
         $response = $this->api_request('POST', '/v1/scans', $payload);
         if (is_wp_error($response)) {
-            $this->redirect_with_notice('wplaunchguard-scan', 'error', $response->get_error_message());
+            $this->redirect_with_notice('wplaunchguard-scan', 'error', $this->format_scan_api_error($response->get_error_message()));
         }
 
         $scanId = sanitize_text_field((string) ($response['data']['scan_id'] ?? ''));
@@ -742,7 +832,7 @@ class WPLG_Admin
 
         $response = $this->api_request('POST', '/v1/scans', $payload);
         if (is_wp_error($response)) {
-            $this->redirect_to_post_with_notice($postId, 'error', $response->get_error_message());
+            $this->redirect_to_post_with_notice($postId, 'error', $this->format_scan_api_error($response->get_error_message()));
         }
 
         $scanId = sanitize_text_field((string) ($response['data']['scan_id'] ?? ''));
@@ -861,6 +951,78 @@ class WPLG_Admin
         wp_send_json_success($this->build_scan_status_payload($scanRow));
     }
 
+    public function handle_cancel_scan_ajax(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(['message' => 'forbidden'], 403);
+        }
+
+        $nonce = sanitize_text_field((string) wp_unslash($_REQUEST['nonce'] ?? ''));
+        if (!wp_verify_nonce($nonce, 'wplg_cancel_scan')) {
+            wp_send_json_error(['message' => 'invalid_nonce'], 403);
+        }
+
+        $scanId = sanitize_text_field((string) wp_unslash($_REQUEST['scan_id'] ?? ''));
+        if ($scanId === '') {
+            wp_send_json_error(['message' => 'missing_scan_id'], 400);
+        }
+
+        $response = $this->api_request('POST', '/v1/scans/' . rawurlencode($scanId) . '/cancel', [
+            'reason' => 'Cancelled by administrator from WordPress.'
+        ]);
+        if (is_wp_error($response)) {
+            wp_send_json_error(['message' => $response->get_error_message()], 400);
+        }
+
+        wp_send_json_success([
+            'scan_id' => sanitize_text_field((string) ($response['data']['scan_id'] ?? $scanId)),
+            'status' => sanitize_key((string) ($response['data']['status'] ?? 'cancelled')),
+            'summary' => is_array($response['data']['summary'] ?? null) ? $response['data']['summary'] : []
+        ]);
+    }
+
+    public function handle_cancel_scan(): void
+    {
+        if (!current_user_can('manage_options')) {
+            wp_die('Unauthorized request');
+        }
+        check_admin_referer('wplg_cancel_scan', 'wplg_cancel_scan_nonce');
+
+        $scanId = sanitize_text_field((string) wp_unslash($_POST['wplg_scan_id'] ?? ''));
+        $postId = absint(wp_unslash($_POST['wplg_post_id'] ?? 0));
+        $page = sanitize_key((string) wp_unslash($_POST['wplg_page'] ?? 'wplaunchguard-scan'));
+        if (!in_array($page, ['wplaunchguard-dashboard', 'wplaunchguard-scan'], true)) {
+            $page = 'wplaunchguard-scan';
+        }
+
+        if ($scanId === '') {
+            if ($postId > 0) {
+                $this->redirect_to_post_with_notice($postId, 'error', 'Scan ID missing for cancel action.');
+            }
+            $this->redirect_with_notice($page, 'error', 'Scan ID missing for cancel action.');
+        }
+
+        $response = $this->api_request('POST', '/v1/scans/' . rawurlencode($scanId) . '/cancel', [
+            'reason' => 'Cancelled by administrator from WordPress.'
+        ]);
+        if (is_wp_error($response)) {
+            if ($postId > 0) {
+                $this->redirect_to_post_with_notice($postId, 'error', $response->get_error_message(), $scanId);
+            }
+            $this->redirect_with_notice($page, 'error', $response->get_error_message(), $scanId);
+        }
+
+        $message = 'Scan cancelled.';
+        if (!empty($response['data']['already_terminal'])) {
+            $message = 'Scan already reached a terminal state.';
+        }
+
+        if ($postId > 0) {
+            $this->redirect_to_post_with_notice($postId, 'success', $message, $scanId);
+        }
+        $this->redirect_with_notice($page, 'success', $message, $scanId);
+    }
+
     private function ensure_admin_post(string $action): void
     {
         if (!current_user_can('manage_options')) {
@@ -894,6 +1056,8 @@ class WPLG_Admin
         $currentIndex = isset($progress['current_index']) && is_numeric($progress['current_index']) ? (int) $progress['current_index'] : 0;
         $percentFromObject = isset($progress['percent']) && is_numeric($progress['percent']) ? (int) round((float) $progress['percent']) : null;
         $percentFromTop = isset($summary['progress_percent']) && is_numeric($summary['progress_percent']) ? (int) round((float) $summary['progress_percent']) : null;
+        $currentUrl = esc_url_raw((string) ($progress['current_url'] ?? ($summary['current_url'] ?? '')));
+        $lastUpdateAt = sanitize_text_field((string) ($progress['last_update_at'] ?? ($summary['callback_received_at'] ?? '')));
 
         $percent = null;
         if ($percentFromObject !== null) {
@@ -909,7 +1073,9 @@ class WPLG_Admin
             'total_urls' => $totalUrls,
             'completed_urls' => max(0, $completedUrls),
             'current_index' => max(0, $currentIndex),
-            'phase' => sanitize_key((string) ($progress['phase'] ?? ''))
+            'phase' => sanitize_key((string) ($progress['phase'] ?? '')),
+            'current_url' => $currentUrl,
+            'last_update_at' => $lastUpdateAt
         ];
     }
 
@@ -952,6 +1118,18 @@ class WPLG_Admin
         $currentUrl = $this->extract_current_scan_url($summary, $scanRow);
         $targetUrl = esc_url_raw((string) ($scanRow['target_url'] ?? ($summary['target_url'] ?? ($summary['dispatch']['target_url'] ?? ($summary['dispatch']['site_url'] ?? '')))));
         $issuesTotal = $this->extract_issues_total($summary);
+        $safety = isset($summary['safety']) && is_array($summary['safety']) ? $summary['safety'] : [];
+        $safetyPayload = [
+            'mode' => sanitize_key((string) ($safety['mode'] ?? 'strict')),
+            'triggered' => !empty($safety['triggered']),
+            'reason_code' => sanitize_key((string) ($safety['reason_code'] ?? '')),
+            'reason_detail' => sanitize_text_field((string) ($safety['reason_detail'] ?? '')),
+            'auto_action' => sanitize_key((string) ($safety['auto_action'] ?? '')),
+            'triggered_at' => sanitize_text_field((string) ($safety['triggered_at'] ?? ''))
+        ];
+        $reportUrl = esc_url_raw((string) ($summary['report_index_url'] ?? ''));
+        $workflowUrl = esc_url_raw((string) ($summary['workflow_url'] ?? ''));
+        $artifactUrl = esc_url_raw((string) ($summary['reports_artifact_url'] ?? ''));
 
         return [
             'scan_id' => sanitize_text_field((string) ($scanRow['id'] ?? '')),
@@ -966,10 +1144,12 @@ class WPLG_Admin
             'eta_text' => $this->get_scan_eta_text($status),
             'current_url' => $currentUrl,
             'target_url' => $targetUrl,
-            'report_url' => esc_url_raw((string) ($summary['report_index_url'] ?? '')),
-            'workflow_url' => esc_url_raw((string) ($summary['workflow_url'] ?? '')),
-            'artifact_url' => esc_url_raw((string) ($summary['reports_artifact_url'] ?? '')),
-            'progress' => $progressSnapshot
+            'report_url' => $reportUrl,
+            'workflow_url' => $workflowUrl,
+            'artifact_url' => $artifactUrl,
+            'report_publishing' => $status === 'completed' && $reportUrl === '',
+            'progress' => $progressSnapshot,
+            'safety' => $safetyPayload
         ];
     }
 
@@ -1120,18 +1300,49 @@ class WPLG_Admin
 
         $scan = is_array($scanResponse['data']['scan'] ?? null) ? $scanResponse['data']['scan'] : [];
         $summary = $this->extract_scan_summary($scan);
+        $status = sanitize_key((string) ($scan['status'] ?? 'unknown'));
+        $progress = $this->estimate_scan_progress($status, $summary);
+        $currentUrl = $this->extract_current_scan_url($summary, $scan);
+        $message = $this->get_scan_eta_text($status);
+        $pollUrl = admin_url('admin-ajax.php');
+        $pollNonce = wp_create_nonce('wplg_poll_scan');
+        $cancelNonce = wp_create_nonce('wplg_cancel_scan');
 
-        echo '<p><strong>ID:</strong> ' . esc_html($scanId) . '</p>';
-        echo '<p><strong>Status:</strong> ' . esc_html((string) ($scan['status'] ?? 'unknown')) . '</p>';
+        $createdAt = sanitize_text_field((string) ($scan['created_at'] ?? ''));
+        echo '<div class="wplg-inline-tracker" data-wplg-inline-tracker="1" data-scan-id="' . esc_attr($scanId) . '" data-poll-url="' . esc_url($pollUrl) . '" data-poll-nonce="' . esc_attr($pollNonce) . '" data-cancel-nonce="' . esc_attr($cancelNonce) . '" data-created-at="' . esc_attr($createdAt) . '">';
+        echo '<p><strong>ID:</strong> <code>' . esc_html($scanId) . '</code></p>';
+        echo '<p><strong>Status:</strong> <span data-wplg-inline-status>' . esc_html($status !== '' ? $status : 'unknown') . '</span></p>';
+        echo '<p><strong>Progress:</strong> <span data-wplg-inline-progress-text>' . esc_html((string) $progress) . '%</span></p>';
+        echo '<p><strong>Elapsed:</strong> <span data-wplg-inline-elapsed>--</span></p>';
+        echo '<div class="wplg-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $progress) . '" data-wplg-inline-progress-wrap="1">';
+        echo '<span data-wplg-inline-progress-bar="1" style="width:' . esc_attr((string) $progress) . '%"></span>';
+        echo '</div>';
+        echo '<p><strong>Current URL:</strong> <code class="wplg-break-word" data-wplg-inline-current-url>' . esc_html($currentUrl !== '' ? $currentUrl : 'Waiting for live scan telemetry...') . '</code></p>';
+        if ($message !== '') {
+            echo '<p class="description" data-wplg-inline-message>' . esc_html($message) . '</p>';
+        } else {
+            echo '<p class="description" data-wplg-inline-message></p>';
+        }
 
+        $isRunning = $this->is_scan_in_progress($status);
+        echo '<div class="wplg-actions">';
         if (!empty($summary['report_index_url'])) {
-            echo '<p><a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url((string) $summary['report_index_url']) . '">View Report</a></p>';
-            return;
+            echo '<a class="button button-primary" data-wplg-inline-view-report="1" target="_blank" rel="noopener" href="' . esc_url((string) $summary['report_index_url']) . '">View Report</a>';
+        } else {
+            echo '<a class="button button-primary is-disabled" data-wplg-inline-view-report="1" aria-disabled="true" href="#">View Report</a>';
         }
-
         if (!empty($summary['workflow_url'])) {
-            echo '<p><a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $summary['workflow_url']) . '">Open GitHub Run</a></p>';
+            echo '<a class="button" data-wplg-inline-open-run="1" target="_blank" rel="noopener" href="' . esc_url((string) $summary['workflow_url']) . '">Open GitHub Run</a>';
+        } else {
+            echo '<a class="button is-disabled" data-wplg-inline-open-run="1" aria-disabled="true" href="#">Open GitHub Run</a>';
         }
+        if ($isRunning) {
+            echo '<button type="button" class="button" data-wplg-inline-stop="1">Stop Scan</button>';
+        } else {
+            echo '<button type="button" class="button is-disabled" data-wplg-inline-stop="1" aria-disabled="true">Stop Scan</button>';
+        }
+        echo '</div>';
+        echo '</div>';
     }
 
     private function render_scan_setup_card(array $scanDefaults): void
@@ -1184,7 +1395,7 @@ class WPLG_Admin
         echo '</div>';
     }
 
-    private function render_latest_scan_card($lastScan, array $latestScanRow): void
+    private function render_latest_scan_card($lastScan, array $latestScanRow, string $lastCompletedReportUrl = ''): void
     {
         echo '<div class="wplg-card wplg-card-latest">';
         echo '<h2>Latest Scan</h2>';
@@ -1203,6 +1414,7 @@ class WPLG_Admin
         $scan = $latestScanRow;
         $scanSummary = $this->extract_scan_summary($scan);
         $scanStatus = sanitize_key((string) ($scan['status'] ?? ''));
+        $scanId = sanitize_text_field((string) ($scan['id'] ?? ''));
         echo '<ul class="wplg-kv-list">';
         echo '<li><span>ID</span><code>' . esc_html((string) ($scan['id'] ?? 'n/a')) . '</code></li>';
         echo '<li><span>Status</span>' . $this->render_status_pill((string) ($scan['status'] ?? 'n/a')) . '</li>';
@@ -1240,6 +1452,13 @@ class WPLG_Admin
             echo '<p class="description">Live scan progress is available in the tracker modal while your scan is running.</p>';
             echo '<div class="wplg-actions">';
             echo '<button type="button" class="button" data-wplg-open-scan-modal="1">Track Live Scan</button>';
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-inline-form">';
+            echo '<input type="hidden" name="action" value="wplg_cancel_scan" />';
+            echo '<input type="hidden" name="wplg_page" value="wplaunchguard-scan" />';
+            echo '<input type="hidden" name="wplg_scan_id" value="' . esc_attr($scanId) . '" />';
+            wp_nonce_field('wplg_cancel_scan', 'wplg_cancel_scan_nonce');
+            echo '<button type="submit" class="button">Stop Scan</button>';
+            echo '</form>';
             echo '<a class="button" href="' . esc_url(admin_url('admin.php?page=wplaunchguard-scan')) . '">Refresh Now</a>';
             echo '</div>';
         }
@@ -1257,10 +1476,23 @@ class WPLG_Admin
         if (!empty($scanSummary['run_state'])) {
             echo '<p><strong>Run State:</strong> ' . esc_html((string) $scanSummary['run_state']) . '</p>';
         }
+        if ($scanStatus === 'stalled') {
+            echo '<p class="description">Scan stalled due to missing progress telemetry. Retry with safe profile.</p>';
+        }
+        if ($scanStatus === 'protected_stopped') {
+            echo '<p class="description">Site protection triggered. Scan auto-stopped to protect uptime.</p>';
+        }
+
+        $hasReport = !empty($scanSummary['report_index_url']);
+        if ($scanStatus === 'completed' && !$hasReport) {
+            echo '<p class="description">Report is still publishing. Retry in a few seconds, or use fallback links below.</p>';
+        }
 
         echo '<div class="wplg-actions">';
         if (!empty($scanSummary['report_index_url'])) {
             echo '<a class="button button-primary" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['report_index_url']) . '">View Report</a>';
+        } elseif ($scanStatus === 'completed') {
+            echo '<a class="button button-primary" href="' . esc_url(add_query_arg(['page' => 'wplaunchguard-scan'], admin_url('admin.php'))) . '">Retry Report Link</a>';
         }
 
         if (!empty($scanSummary['workflow_url'])) {
@@ -1269,6 +1501,22 @@ class WPLG_Admin
 
         if (!empty($scanSummary['reports_artifact_url'])) {
             echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['reports_artifact_url']) . '">Download Report ZIP</a>';
+        }
+        if (in_array($scanStatus, ['failed', 'cancelled', 'protected_stopped', 'stalled'], true)) {
+            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-inline-form">';
+            echo '<input type="hidden" name="action" value="wplg_run_scan" />';
+            echo '<input type="hidden" name="form_mode" value="dry-run" />';
+            echo '<input type="hidden" name="scan_options[evidence_enabled]" value="1" />';
+            echo '<input type="hidden" name="scan_options[lighthouse_enabled]" value="0" />';
+            echo '<input type="hidden" name="scan_options[quick_scan_enabled]" value="1" />';
+            echo '<input type="hidden" name="scan_options[responsive_enabled]" value="0" />';
+            echo '<input type="hidden" name="scan_options[viewport_preset]" value="desktop" />';
+            wp_nonce_field('wplg_run_scan');
+            echo '<button type="submit" class="button">Retry Safe Scan</button>';
+            echo '</form>';
+        }
+        if ($lastCompletedReportUrl !== '') {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url($lastCompletedReportUrl) . '">View Last Completed Report</a>';
         }
         echo '</div>';
 
@@ -1333,6 +1581,31 @@ class WPLG_Admin
         echo '</div>';
     }
 
+    private function find_last_completed_report_url($scans): string
+    {
+        if (is_wp_error($scans)) {
+            return '';
+        }
+        $rows = $scans['data']['scans'] ?? [];
+        if (!is_array($rows) || empty($rows)) {
+            return '';
+        }
+
+        foreach ($rows as $row) {
+            $status = sanitize_key((string) ($row['status'] ?? ''));
+            if ($status !== 'completed') {
+                continue;
+            }
+            $summary = $this->extract_scan_summary($row);
+            $url = esc_url_raw((string) ($summary['report_index_url'] ?? ''));
+            if ($url !== '') {
+                return $url;
+            }
+        }
+
+        return '';
+    }
+
     private function render_scan_option_rows(array $options, string $namePrefix): void
     {
         $this->render_toggle_field($namePrefix . '[evidence_enabled]', $namePrefix . '_evidence_enabled', !empty($options['evidence_enabled']), 'Evidence', 'Captures screenshot proof for detected issues (example: missing alt text evidence).');
@@ -1351,16 +1624,17 @@ class WPLG_Admin
         echo '</div>';
     }
 
-    private function render_scan_progress_modal(string $scanId, bool $autoOpen): void
+    private function render_scan_progress_modal(string $scanId, bool $autoOpen, string $lastCompletedReportUrl = ''): void
     {
         if ($scanId === '') {
             return;
         }
 
         $pollUrl = admin_url('admin-ajax.php');
-        $nonce = wp_create_nonce('wplg_poll_scan');
+        $pollNonce = wp_create_nonce('wplg_poll_scan');
+        $cancelNonce = wp_create_nonce('wplg_cancel_scan');
 
-        echo '<div id="wplg-scan-progress-modal" class="wplg-modal" data-auto-open="' . ($autoOpen ? '1' : '0') . '" data-scan-id="' . esc_attr($scanId) . '" data-poll-url="' . esc_url($pollUrl) . '" data-poll-nonce="' . esc_attr($nonce) . '" aria-hidden="true">';
+        echo '<div id="wplg-scan-progress-modal" class="wplg-modal" data-auto-open="' . ($autoOpen ? '1' : '0') . '" data-scan-id="' . esc_attr($scanId) . '" data-poll-url="' . esc_url($pollUrl) . '" data-poll-nonce="' . esc_attr($pollNonce) . '" data-cancel-nonce="' . esc_attr($cancelNonce) . '" data-last-report-url="' . esc_url($lastCompletedReportUrl) . '" aria-hidden="true">';
         echo '<div class="wplg-modal__backdrop" data-wplg-modal-close="1"></div>';
         echo '<div class="wplg-modal__dialog" role="dialog" aria-modal="true" aria-labelledby="wplg-modal-title">';
         echo '<div class="wplg-modal__header">';
@@ -1375,14 +1649,30 @@ class WPLG_Admin
         echo '<span id="wplg-modal-progress-bar" style="width:0%"></span>';
         echo '</div>';
         echo '<div class="wplg-modal__ticker"><strong>Current URL:</strong> <code id="wplg-modal-current-url">Waiting for live scan telemetry...</code></div>';
+        echo '<div class="wplg-modal__ticker"><strong>Elapsed:</strong> <span id="wplg-modal-elapsed">--</span></div>';
+        echo '<div class="wplg-modal__ticker" id="wplg-modal-status-message">Scan is queued.</div>';
         echo '<div class="wplg-modal__ticker"><strong>QA tip:</strong> <span id="wplg-modal-tip-text">Checking forms and broken links first usually finds the highest-impact conversion issues.</span></div>';
         echo '<div class="wplg-modal__ticker muted" id="wplg-modal-eta-text"></div>';
         echo '</div>';
         echo '<div class="wplg-modal__footer">';
         echo '<a id="wplg-modal-view-report" class="button button-primary" href="#" target="_blank" rel="noopener" aria-disabled="true">View Report</a>';
         echo '<a id="wplg-modal-open-workflow" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">Open GitHub Run</a>';
+        echo '<a id="wplg-modal-download-artifact" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">Download Report ZIP</a>';
+        echo '<a id="wplg-modal-last-report" class="button" href="' . esc_url($lastCompletedReportUrl !== '' ? $lastCompletedReportUrl : '#') . '" target="_blank" rel="noopener" aria-disabled="' . ($lastCompletedReportUrl !== '' ? 'false' : 'true') . '">View Last Completed Report</a>';
+        echo '<button type="button" id="wplg-modal-retry-safe" class="button">Retry Safe Scan</button>';
+        echo '<button type="button" id="wplg-modal-stop" class="button">Stop Scan</button>';
         echo '<button type="button" class="button" data-wplg-modal-close="1">Close</button>';
         echo '</div>';
+        echo '<form id="wplg-modal-retry-safe-form" method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-hidden-form">';
+        echo '<input type="hidden" name="action" value="wplg_run_scan" />';
+        echo '<input type="hidden" name="form_mode" value="dry-run" />';
+        echo '<input type="hidden" name="scan_options[evidence_enabled]" value="1" />';
+        echo '<input type="hidden" name="scan_options[lighthouse_enabled]" value="0" />';
+        echo '<input type="hidden" name="scan_options[quick_scan_enabled]" value="1" />';
+        echo '<input type="hidden" name="scan_options[responsive_enabled]" value="0" />';
+        echo '<input type="hidden" name="scan_options[viewport_preset]" value="desktop" />';
+        wp_nonce_field('wplg_run_scan', '_wpnonce', true, true);
+        echo '</form>';
         echo '</div>';
         echo '</div>';
     }
@@ -1397,15 +1687,21 @@ class WPLG_Admin
         ?>
         <script>
           (function() {
-            var runningStatusMap = { queued: true, queued_local: true, running: true, dispatched: true };
+            var RUNNING_STATUS = { queued: true, queued_local: true, dispatched: true, running: true };
+            var TERMINAL_STATUS = { completed: true, failed: true, cancelled: true, protected_stopped: true, stalled: true };
 
-            function isRunningStatus(status) {
-              return !!runningStatusMap[String(status || '').toLowerCase()];
+            function normalizeStatus(value) {
+              var normalized = String(value || '').toLowerCase().trim();
+              if (normalized === 'canceled') return 'cancelled';
+              return normalized || 'queued';
             }
 
-            function isTerminalStatus(status) {
-              var normalized = String(status || '').toLowerCase();
-              return normalized === 'completed' || normalized === 'failed' || normalized === 'cancelled';
+            function isRunningStatus(value) {
+              return !!RUNNING_STATUS[normalizeStatus(value)];
+            }
+
+            function isTerminalStatus(value) {
+              return !!TERMINAL_STATUS[normalizeStatus(value)];
             }
 
             function clampNumber(value, min, max) {
@@ -1414,6 +1710,57 @@ class WPLG_Admin
               if (parsed < min) return min;
               if (parsed > max) return max;
               return parsed;
+            }
+
+            function parseIsoMs(value) {
+              var ms = Date.parse(String(value || '').trim());
+              return Number.isFinite(ms) ? ms : 0;
+            }
+
+            function formatElapsedText(createdAt) {
+              var startMs = parseIsoMs(createdAt);
+              if (!startMs) return '--';
+              var elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+              var hours = Math.floor(elapsedSec / 3600);
+              var minutes = Math.floor((elapsedSec % 3600) / 60);
+              var seconds = elapsedSec % 60;
+              if (hours > 0) return hours + 'h ' + minutes + 'm ' + seconds + 's';
+              if (minutes > 0) return minutes + 'm ' + seconds + 's';
+              return seconds + 's';
+            }
+
+            function emitTelemetry(eventName, detail) {
+              var payload = detail && typeof detail === 'object' ? detail : {};
+              try {
+                window.dispatchEvent(new CustomEvent('wplg_scan_telemetry', { detail: Object.assign({ event: eventName }, payload) }));
+              } catch (error) {}
+            }
+
+            function setLinkState(anchorEl, url) {
+              if (!anchorEl) return;
+              var safeUrl = String(url || '').trim();
+              if (!safeUrl) {
+                anchorEl.setAttribute('aria-disabled', 'true');
+                anchorEl.classList.add('is-disabled');
+                anchorEl.setAttribute('href', '#');
+                return;
+              }
+              anchorEl.removeAttribute('aria-disabled');
+              anchorEl.classList.remove('is-disabled');
+              anchorEl.setAttribute('href', safeUrl);
+            }
+
+            function setButtonState(buttonEl, enabled) {
+              if (!buttonEl) return;
+              if (enabled) {
+                buttonEl.removeAttribute('disabled');
+                buttonEl.removeAttribute('aria-disabled');
+                buttonEl.classList.remove('is-disabled');
+                return;
+              }
+              buttonEl.setAttribute('disabled', 'disabled');
+              buttonEl.setAttribute('aria-disabled', 'true');
+              buttonEl.classList.add('is-disabled');
             }
 
             function updateDashboardSummary() {
@@ -1471,6 +1818,157 @@ class WPLG_Admin
               sync();
             }
 
+            function getBranchState(payload) {
+              var status = normalizeStatus(payload.status || payload.status_label || '');
+              var hasWorkflow = String(payload.workflow_url || '').trim() !== '';
+              var hasReport = String(payload.report_url || '').trim() !== '';
+              var hasArtifact = String(payload.artifact_url || '').trim() !== '';
+              var safety = payload.safety && typeof payload.safety === 'object' ? payload.safety : {};
+              var safetyDetail = String(safety.reason_detail || '').trim();
+
+              if (status === 'queued' || status === 'queued_local') {
+                return {
+                  key: 'queued',
+                  message: 'Scan queued. We are preparing a safe cloud run.'
+                };
+              }
+              if (status === 'dispatched' || status === 'running') {
+                return {
+                  key: 'running',
+                  message: 'Scan is running in the cloud with strict safety guardrails enabled.'
+                };
+              }
+              if (status === 'stalled') {
+                return {
+                  key: 'stalled',
+                  message: safetyDetail || 'Scan stalled due to missing progress updates. Retry with a safe profile.',
+                  primary: 'retry_safe',
+                  secondary: hasWorkflow ? 'open_workflow' : null
+                };
+              }
+              if (status === 'protected_stopped') {
+                return {
+                  key: 'protected_stopped',
+                  message: safetyDetail || 'Site under stress; scan auto-stopped to protect uptime.',
+                  primary: 'retry_safe',
+                  secondary: hasWorkflow ? 'open_workflow' : null
+                };
+              }
+              if (status === 'failed' && !hasWorkflow) {
+                return {
+                  key: 'dispatch_failed',
+                  message: 'Scan dispatch failed before workflow start. Retry in safe mode.',
+                  primary: 'retry_safe'
+                };
+              }
+              if (status === 'failed') {
+                return {
+                  key: 'failed',
+                  message: 'Scan failed. Open the GitHub run for details and retry with safe scan.',
+                  primary: hasWorkflow ? 'open_workflow' : 'retry_safe',
+                  secondary: 'retry_safe'
+                };
+              }
+              if (status === 'cancelled') {
+                return {
+                  key: 'cancelled',
+                  message: 'Scan cancelled by administrator.',
+                  primary: 'retry_safe',
+                  secondary: hasWorkflow ? 'open_workflow' : null
+                };
+              }
+              if (status === 'completed' && !hasReport) {
+                return {
+                  key: 'report_publishing',
+                  message: 'Scan completed. Report is still publishing. Retrying automatically.',
+                  primary: hasWorkflow ? 'open_workflow' : null,
+                  secondary: hasArtifact ? 'download_zip' : null
+                };
+              }
+              if (status === 'completed' && safety && safety.triggered) {
+                return {
+                  key: 'completed_with_warnings',
+                  message: 'Scan completed with warnings. Review transient infrastructure checks in the report.',
+                  primary: hasReport ? 'view_report' : null,
+                  secondary: hasWorkflow ? 'open_workflow' : null
+                };
+              }
+              if (status === 'completed') {
+                return {
+                  key: 'completed',
+                  message: 'Scan complete. Open the HTML report directly.',
+                  primary: hasReport ? 'view_report' : null,
+                  secondary: hasWorkflow ? 'open_workflow' : null
+                };
+              }
+              return {
+                key: 'unknown',
+                message: 'Scan status update received.'
+              };
+            }
+
+            function buildProgressLine(payload) {
+              var progress = payload.progress && typeof payload.progress === 'object' ? payload.progress : {};
+              var total = clampNumber(progress.total_urls, 0, 50000);
+              var completed = clampNumber(progress.completed_urls, 0, 50000);
+              var currentIndex = clampNumber(progress.current_index, 0, 50000);
+              var parts = [];
+              if (total > 0) {
+                var activeIndex = currentIndex > 0 ? currentIndex : Math.max(1, completed);
+                parts.push('URL ' + Math.min(activeIndex, total) + ' of ' + total);
+              }
+              var eta = String(payload.eta_text || '').trim();
+              if (eta) {
+                parts.push(eta);
+              }
+              return parts.join(' | ');
+            }
+
+            function readCurrentUrl(payload) {
+              var progress = payload && payload.progress && typeof payload.progress === 'object' ? payload.progress : {};
+              return String(payload.current_url || progress.current_url || progress.last_completed_url || payload.target_url || '').trim();
+            }
+
+            function buildNotice(status, payload) {
+              var hasReport = String(payload && payload.report_url || '').trim() !== '';
+              var message = 'Scan update received.';
+              if (status === 'completed' && hasReport) message = 'Scan completed successfully.';
+              if (status === 'completed' && !hasReport) message = 'Scan completed. Report is still publishing.';
+              if (status === 'failed') message = 'Scan failed.';
+              if (status === 'cancelled') message = 'Scan was cancelled.';
+              if (status === 'protected_stopped') message = 'Site protection triggered. Scan auto-stopped.';
+              if (status === 'stalled') message = 'Scan stalled due to missing telemetry updates.';
+              return message;
+            }
+
+            function showCompletionNotice(status, payload) {
+              var root = document.querySelector('.wrap.wplg-wrap') || document.querySelector('.wrap');
+              if (!root) return;
+              var existing = document.getElementById('wplg-runtime-scan-notice');
+              if (existing && existing.parentNode) {
+                existing.parentNode.removeChild(existing);
+              }
+
+              var isOk = status === 'completed';
+              var notice = document.createElement('div');
+              notice.id = 'wplg-runtime-scan-notice';
+              notice.className = 'notice ' + (isOk ? 'notice-success' : 'notice-warning') + ' is-dismissible';
+
+              var paragraph = document.createElement('p');
+              paragraph.appendChild(document.createTextNode(buildNotice(status, payload) + ' '));
+              var reportUrl = String(payload && payload.report_url || '').trim();
+              if (reportUrl) {
+                var link = document.createElement('a');
+                link.href = reportUrl;
+                link.target = '_blank';
+                link.rel = 'noopener';
+                link.textContent = 'View Report';
+                paragraph.appendChild(link);
+              }
+              notice.appendChild(paragraph);
+              root.insertBefore(notice, root.firstChild);
+            }
+
             (function bindDashboardViewport() {
               var responsive = document.getElementById('wplg_responsive_scan');
               var viewportWrap = document.querySelector('[data-wplg-viewport-wrap="dashboard"]');
@@ -1499,7 +1997,6 @@ class WPLG_Admin
             document.querySelectorAll('.wplg-scan-config-form input, .wplg-scan-config-form select').forEach(function(field) {
               field.addEventListener('change', updateDashboardSummary);
             });
-
             updateDashboardSummary();
 
             (function initScanProgressModal() {
@@ -1510,11 +2007,16 @@ class WPLG_Admin
                 scanId: String(modal.getAttribute('data-scan-id') || '').trim(),
                 pollUrl: String(modal.getAttribute('data-poll-url') || '').trim(),
                 pollNonce: String(modal.getAttribute('data-poll-nonce') || '').trim(),
+                cancelNonce: String(modal.getAttribute('data-cancel-nonce') || '').trim(),
                 autoOpen: modal.getAttribute('data-auto-open') === '1',
+                lastCompletedReportUrl: String(modal.getAttribute('data-last-report-url') || '').trim(),
                 pollTimer: null,
                 tipTimer: null,
+                elapsedTimer: null,
                 lastProgress: 0,
-                lastStatus: ''
+                lastStatus: '',
+                createdAt: '',
+                branchKey: ''
               };
 
               var tips = [
@@ -1534,10 +2036,22 @@ class WPLG_Admin
               var progressBarEl = document.getElementById('wplg-modal-progress-bar');
               var progressWrapEl = modal.querySelector('.wplg-modal__progress');
               var currentUrlEl = document.getElementById('wplg-modal-current-url');
+              var elapsedEl = document.getElementById('wplg-modal-elapsed');
+              var statusMessageEl = document.getElementById('wplg-modal-status-message');
               var tipTextEl = document.getElementById('wplg-modal-tip-text');
               var etaTextEl = document.getElementById('wplg-modal-eta-text');
               var viewReportEl = document.getElementById('wplg-modal-view-report');
               var openWorkflowEl = document.getElementById('wplg-modal-open-workflow');
+              var downloadArtifactEl = document.getElementById('wplg-modal-download-artifact');
+              var lastReportEl = document.getElementById('wplg-modal-last-report');
+              var retrySafeBtn = document.getElementById('wplg-modal-retry-safe');
+              var stopBtn = document.getElementById('wplg-modal-stop');
+              var retrySafeForm = document.getElementById('wplg-modal-retry-safe-form');
+
+              function updateElapsedLabel() {
+                if (!elapsedEl) return;
+                elapsedEl.textContent = formatElapsedText(state.createdAt);
+              }
 
               function setModalOpen(isOpen) {
                 if (isOpen) {
@@ -1551,21 +2065,7 @@ class WPLG_Admin
                 document.body.classList.remove('wplg-modal-open');
               }
 
-              function setLinkState(anchorEl, url) {
-                if (!anchorEl) return;
-                var safeUrl = String(url || '').trim();
-                if (!safeUrl) {
-                  anchorEl.setAttribute('aria-disabled', 'true');
-                  anchorEl.classList.add('is-disabled');
-                  anchorEl.setAttribute('href', '#');
-                  return;
-                }
-                anchorEl.removeAttribute('aria-disabled');
-                anchorEl.classList.remove('is-disabled');
-                anchorEl.setAttribute('href', safeUrl);
-              }
-
-              function updateTitleForStatus(status) {
+              function updateTitle(status) {
                 if (!titleEl) return;
                 if (status === 'completed') {
                   titleEl.textContent = 'Scan Complete';
@@ -1579,6 +2079,14 @@ class WPLG_Admin
                   titleEl.textContent = 'Scan Cancelled';
                   return;
                 }
+                if (status === 'protected_stopped') {
+                  titleEl.textContent = 'Scan Auto-Stopped';
+                  return;
+                }
+                if (status === 'stalled') {
+                  titleEl.textContent = 'Scan Stalled';
+                  return;
+                }
                 titleEl.textContent = 'Scan In Progress';
               }
 
@@ -1588,126 +2096,6 @@ class WPLG_Admin
                 tipIndex += 1;
               }
 
-              function readCurrentUrl(payload) {
-                var progress = payload && payload.progress && typeof payload.progress === 'object' ? payload.progress : {};
-                var current = String(payload.current_url || progress.current_url || progress.last_completed_url || payload.target_url || '').trim();
-                return current;
-              }
-
-              function showCompletionNotice(status, payload) {
-                var root = document.querySelector('.wrap.wplg-wrap') || document.querySelector('.wrap');
-                if (!root) return;
-
-                var existing = document.getElementById('wplg-runtime-scan-notice');
-                if (existing && existing.parentNode) {
-                  existing.parentNode.removeChild(existing);
-                }
-
-                var notice = document.createElement('div');
-                notice.id = 'wplg-runtime-scan-notice';
-                notice.className = 'notice ' + (status === 'completed' ? 'notice-success' : 'notice-error') + ' is-dismissible';
-
-                var message = 'Scan update received.';
-                if (status === 'completed') {
-                  message = 'Scan completed successfully.';
-                } else if (status === 'failed') {
-                  message = 'Scan failed.';
-                } else if (status === 'cancelled') {
-                  message = 'Scan was cancelled.';
-                }
-
-                var paragraph = document.createElement('p');
-                paragraph.appendChild(document.createTextNode(message + ' '));
-
-                var reportUrl = String((payload && payload.report_url) || '').trim();
-                if (reportUrl) {
-                  var reportLink = document.createElement('a');
-                  reportLink.href = reportUrl;
-                  reportLink.target = '_blank';
-                  reportLink.rel = 'noopener';
-                  reportLink.textContent = 'View Report';
-                  paragraph.appendChild(reportLink);
-                }
-
-                notice.appendChild(paragraph);
-                root.insertBefore(notice, root.firstChild);
-              }
-
-              function renderScanPayload(payload) {
-                if (!payload || typeof payload !== 'object') return;
-
-                var status = String(payload.status || payload.status_label || 'queued').toLowerCase();
-                var previousStatus = String(state.lastStatus || '').toLowerCase();
-                var progressRaw = payload.progress_percent;
-                var progress = clampNumber(progressRaw, 0, 100);
-
-                if ((status === 'running' || status === 'dispatched') && progress <= state.lastProgress && state.lastProgress < 95) {
-                  progress = state.lastProgress + 1;
-                }
-                if (isRunningStatus(status)) {
-                  state.lastProgress = Math.max(state.lastProgress, progress);
-                  progress = state.lastProgress;
-                } else {
-                  state.lastProgress = progress;
-                }
-                if (isTerminalStatus(status) && progress < 100) {
-                  progress = 100;
-                  state.lastProgress = 100;
-                }
-
-                var scanId = String(payload.scan_id || state.scanId || '').trim();
-                if (scanId !== '') {
-                  state.scanId = scanId;
-                  if (scanIdEl) {
-                    scanIdEl.textContent = scanId;
-                  }
-                }
-
-                if (statusEl) {
-                  statusEl.textContent = status || 'queued';
-                }
-
-                if (progressTextEl) {
-                  progressTextEl.textContent = progress + '%';
-                }
-                if (progressBarEl) {
-                  progressBarEl.style.width = progress + '%';
-                }
-                if (progressWrapEl) {
-                  progressWrapEl.setAttribute('aria-valuenow', String(progress));
-                }
-
-                var currentUrl = readCurrentUrl(payload);
-                if (currentUrlEl) {
-                  currentUrlEl.textContent = currentUrl || 'Waiting for live scan telemetry...';
-                }
-
-                var progressSnapshot = payload.progress && typeof payload.progress === 'object' ? payload.progress : {};
-                var totalUrls = clampNumber(progressSnapshot.total_urls, 0, 50000);
-                var completedUrls = clampNumber(progressSnapshot.completed_urls, 0, 50000);
-                var currentIndex = clampNumber(progressSnapshot.current_index, 0, 50000);
-                var etaParts = [];
-                if (totalUrls > 0) {
-                  var activeIndex = currentIndex > 0 ? currentIndex : (completedUrls > 0 ? completedUrls : 1);
-                  etaParts.push('URL ' + Math.min(activeIndex, totalUrls) + ' of ' + totalUrls);
-                }
-                if (payload.eta_text) {
-                  etaParts.push(String(payload.eta_text));
-                }
-                if (etaTextEl) {
-                  etaTextEl.textContent = etaParts.join(' | ');
-                }
-
-                updateTitleForStatus(status);
-                setLinkState(viewReportEl, payload.report_url);
-                setLinkState(openWorkflowEl, payload.workflow_url);
-
-                if (isRunningStatus(previousStatus) && isTerminalStatus(status)) {
-                  showCompletionNotice(status, payload);
-                }
-                state.lastStatus = status;
-              }
-
               function schedulePoll(delayMs) {
                 if (state.pollTimer) {
                   clearTimeout(state.pollTimer);
@@ -1715,35 +2103,144 @@ class WPLG_Admin
                 state.pollTimer = setTimeout(pollScanStatus, delayMs);
               }
 
+              function requestCancel(callback) {
+                if (!state.pollUrl || !state.cancelNonce || !state.scanId) {
+                  callback(false);
+                  return;
+                }
+
+                var body = new URLSearchParams();
+                body.set('action', 'wplg_cancel_scan');
+                body.set('scan_id', state.scanId);
+                body.set('nonce', state.cancelNonce);
+
+                fetch(state.pollUrl, {
+                  method: 'POST',
+                  credentials: 'same-origin',
+                  headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                  },
+                  body: body.toString()
+                })
+                  .then(function(response) { return response.json(); })
+                  .then(function(payload) {
+                    if (payload && payload.success) {
+                      emitTelemetry('scan_manual_cancel', { scan_id: state.scanId, surface: 'scan_modal' });
+                      callback(true);
+                      return;
+                    }
+                    callback(false);
+                  })
+                  .catch(function() {
+                    callback(false);
+                  });
+              }
+
+              function renderModalState(payload) {
+                if (!payload || typeof payload !== 'object') return;
+                var status = normalizeStatus(payload.status || payload.status_label || 'queued');
+                var previousStatus = normalizeStatus(state.lastStatus);
+                var progress = clampNumber(payload.progress_percent, 0, 100);
+
+                if (isRunningStatus(status)) {
+                  if (progress <= state.lastProgress && state.lastProgress < 99) {
+                    progress = state.lastProgress + 1;
+                  }
+                  state.lastProgress = Math.max(state.lastProgress, progress);
+                  progress = state.lastProgress;
+                } else {
+                  state.lastProgress = progress;
+                }
+
+                if (isTerminalStatus(status) && progress < 100) {
+                  progress = 100;
+                  state.lastProgress = 100;
+                }
+
+                var scanId = String(payload.scan_id || state.scanId || '').trim();
+                if (scanId) {
+                  state.scanId = scanId;
+                }
+                if (scanIdEl) {
+                  scanIdEl.textContent = state.scanId || '--';
+                }
+
+                if (!state.createdAt) {
+                  state.createdAt = String(payload.created_at || '').trim();
+                }
+                updateElapsedLabel();
+
+                if (statusEl) statusEl.textContent = status;
+                if (progressTextEl) progressTextEl.textContent = progress + '%';
+                if (progressBarEl) progressBarEl.style.width = progress + '%';
+                if (progressWrapEl) progressWrapEl.setAttribute('aria-valuenow', String(progress));
+                if (currentUrlEl) {
+                  var currentUrl = readCurrentUrl(payload);
+                  currentUrlEl.textContent = currentUrl || 'Waiting for live scan telemetry...';
+                }
+                if (etaTextEl) etaTextEl.textContent = buildProgressLine(payload);
+
+                var branch = getBranchState(payload);
+                if (statusMessageEl) statusMessageEl.textContent = branch.message;
+                if (branch.key !== state.branchKey) {
+                  state.branchKey = branch.key;
+                  emitTelemetry('scan_branch_state', {
+                    scan_id: state.scanId,
+                    status: status,
+                    branch: branch.key,
+                    surface: 'scan_modal'
+                  });
+                }
+
+                updateTitle(status);
+                setLinkState(viewReportEl, payload.report_url);
+                setLinkState(openWorkflowEl, payload.workflow_url);
+                setLinkState(downloadArtifactEl, payload.artifact_url);
+                setLinkState(lastReportEl, state.lastCompletedReportUrl);
+
+                var canStop = isRunningStatus(status);
+                setButtonState(stopBtn, canStop);
+
+                var canRetrySafe = status === 'failed' || status === 'cancelled' || status === 'stalled' || status === 'protected_stopped';
+                setButtonState(retrySafeBtn, canRetrySafe);
+
+                if (isRunningStatus(previousStatus) && isTerminalStatus(status)) {
+                  showCompletionNotice(status, payload);
+                }
+                state.lastStatus = status;
+              }
+
               function pollScanStatus() {
                 if (!state.pollUrl || !state.pollNonce || !state.scanId) {
                   return;
                 }
-
                 var params = new URLSearchParams();
                 params.set('action', 'wplg_poll_scan');
                 params.set('scan_id', state.scanId);
                 params.set('nonce', state.pollNonce);
 
-                fetch(state.pollUrl + '?' + params.toString(), {
-                  method: 'GET',
-                  credentials: 'same-origin'
-                })
-                  .then(function(response) {
-                    return response.json();
-                  })
+                fetch(state.pollUrl + '?' + params.toString(), { method: 'GET', credentials: 'same-origin' })
+                  .then(function(response) { return response.json(); })
                   .then(function(payload) {
                     if (!payload || !payload.success || !payload.data) {
+                      emitTelemetry('scan_poll_error', { scan_id: state.scanId, surface: 'scan_modal', reason: 'invalid_payload' });
                       schedulePoll(9000);
                       return;
                     }
 
-                    renderScanPayload(payload.data);
-                    if (isRunningStatus(payload.data.status)) {
+                    renderModalState(payload.data);
+                    var status = normalizeStatus(payload.data.status);
+                    var hasReport = String(payload.data.report_url || '').trim() !== '';
+                    if (isRunningStatus(status)) {
                       schedulePoll(5000);
+                      return;
+                    }
+                    if (status === 'completed' && !hasReport) {
+                      schedulePoll(6000);
                     }
                   })
                   .catch(function() {
+                    emitTelemetry('scan_poll_error', { scan_id: state.scanId, surface: 'scan_modal', reason: 'network_error' });
                     schedulePoll(9000);
                   });
               }
@@ -1763,6 +2260,26 @@ class WPLG_Admin
                 });
               });
 
+              if (stopBtn) {
+                stopBtn.addEventListener('click', function(event) {
+                  event.preventDefault();
+                  setButtonState(stopBtn, false);
+                  requestCancel(function(ok) {
+                    if (!ok) {
+                      setButtonState(stopBtn, true);
+                    }
+                    pollScanStatus();
+                  });
+                });
+              }
+
+              if (retrySafeBtn && retrySafeForm) {
+                retrySafeBtn.addEventListener('click', function(event) {
+                  event.preventDefault();
+                  retrySafeForm.submit();
+                });
+              }
+
               document.addEventListener('keydown', function(event) {
                 if (event.key === 'Escape') {
                   setModalOpen(false);
@@ -1771,11 +2288,165 @@ class WPLG_Admin
 
               updateTip();
               state.tipTimer = setInterval(updateTip, 9000);
+              state.elapsedTimer = setInterval(updateElapsedLabel, 1000);
               pollScanStatus();
-
               if (state.autoOpen) {
                 setModalOpen(true);
               }
+            })();
+
+            (function initInlineTrackers() {
+              var trackers = document.querySelectorAll('[data-wplg-inline-tracker="1"]');
+              if (!trackers.length) return;
+
+              trackers.forEach(function(root) {
+                var state = {
+                  scanId: String(root.getAttribute('data-scan-id') || '').trim(),
+                  pollUrl: String(root.getAttribute('data-poll-url') || '').trim(),
+                  pollNonce: String(root.getAttribute('data-poll-nonce') || '').trim(),
+                  cancelNonce: String(root.getAttribute('data-cancel-nonce') || '').trim(),
+                  createdAt: String(root.getAttribute('data-created-at') || '').trim(),
+                  pollTimer: null,
+                  elapsedTimer: null,
+                  lastProgress: 0,
+                  branchKey: ''
+                };
+                if (!state.scanId || !state.pollUrl || !state.pollNonce) return;
+
+                var statusEl = root.querySelector('[data-wplg-inline-status]');
+                var progressTextEl = root.querySelector('[data-wplg-inline-progress-text]');
+                var progressBarEl = root.querySelector('[data-wplg-inline-progress-bar]');
+                var progressWrapEl = root.querySelector('[data-wplg-inline-progress-wrap]');
+                var currentUrlEl = root.querySelector('[data-wplg-inline-current-url]');
+                var messageEl = root.querySelector('[data-wplg-inline-message]');
+                var elapsedEl = root.querySelector('[data-wplg-inline-elapsed]');
+                var viewReportEl = root.querySelector('[data-wplg-inline-view-report]');
+                var openRunEl = root.querySelector('[data-wplg-inline-open-run]');
+                var stopBtn = root.querySelector('[data-wplg-inline-stop]');
+
+                function updateElapsed() {
+                  if (!elapsedEl) return;
+                  elapsedEl.textContent = formatElapsedText(state.createdAt);
+                }
+
+                function schedulePoll(delayMs) {
+                  if (state.pollTimer) clearTimeout(state.pollTimer);
+                  state.pollTimer = setTimeout(poll, delayMs);
+                }
+
+                function cancelInline() {
+                  if (!state.cancelNonce || !state.pollUrl || !state.scanId) return;
+                  var body = new URLSearchParams();
+                  body.set('action', 'wplg_cancel_scan');
+                  body.set('scan_id', state.scanId);
+                  body.set('nonce', state.cancelNonce);
+                  fetch(state.pollUrl, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                    body: body.toString()
+                  })
+                    .then(function(response) { return response.json(); })
+                    .then(function(payload) {
+                      if (!payload || !payload.success) {
+                        setButtonState(stopBtn, true);
+                      }
+                      poll();
+                    })
+                    .catch(function() {
+                      setButtonState(stopBtn, true);
+                    });
+                }
+
+                function render(payload) {
+                  if (!payload || typeof payload !== 'object') return;
+                  var status = normalizeStatus(payload.status || payload.status_label || 'queued');
+                  var progress = clampNumber(payload.progress_percent, 0, 100);
+                  if (isRunningStatus(status)) {
+                    if (progress <= state.lastProgress && state.lastProgress < 99) {
+                      progress = state.lastProgress + 1;
+                    }
+                    state.lastProgress = Math.max(state.lastProgress, progress);
+                    progress = state.lastProgress;
+                  } else {
+                    state.lastProgress = progress;
+                  }
+                  if (isTerminalStatus(status) && progress < 100) {
+                    progress = 100;
+                    state.lastProgress = 100;
+                  }
+
+                  if (!state.createdAt) {
+                    state.createdAt = String(payload.created_at || '').trim();
+                  }
+                  updateElapsed();
+
+                  if (statusEl) statusEl.textContent = status;
+                  if (progressTextEl) progressTextEl.textContent = progress + '%';
+                  if (progressBarEl) progressBarEl.style.width = progress + '%';
+                  if (progressWrapEl) progressWrapEl.setAttribute('aria-valuenow', String(progress));
+                  if (currentUrlEl) {
+                    var currentUrl = readCurrentUrl(payload);
+                    currentUrlEl.textContent = currentUrl || 'Waiting for live scan telemetry...';
+                  }
+                  setLinkState(viewReportEl, payload.report_url);
+                  setLinkState(openRunEl, payload.workflow_url);
+                  setButtonState(stopBtn, isRunningStatus(status));
+
+                  var branch = getBranchState(payload);
+                  if (messageEl) messageEl.textContent = branch.message;
+                  if (branch.key !== state.branchKey) {
+                    state.branchKey = branch.key;
+                    emitTelemetry('scan_branch_state', {
+                      scan_id: state.scanId,
+                      status: status,
+                      branch: branch.key,
+                      surface: 'metabox'
+                    });
+                  }
+                }
+
+                function poll() {
+                  var params = new URLSearchParams();
+                  params.set('action', 'wplg_poll_scan');
+                  params.set('scan_id', state.scanId);
+                  params.set('nonce', state.pollNonce);
+
+                  fetch(state.pollUrl + '?' + params.toString(), { method: 'GET', credentials: 'same-origin' })
+                    .then(function(response) { return response.json(); })
+                    .then(function(payload) {
+                      if (!payload || !payload.success || !payload.data) {
+                        schedulePoll(9000);
+                        return;
+                      }
+                      render(payload.data);
+                      var status = normalizeStatus(payload.data.status);
+                      var hasReport = String(payload.data.report_url || '').trim() !== '';
+                      if (isRunningStatus(status)) {
+                        schedulePoll(5000);
+                        return;
+                      }
+                      if (status === 'completed' && !hasReport) {
+                        schedulePoll(6000);
+                      }
+                    })
+                    .catch(function() {
+                      schedulePoll(9000);
+                    });
+                }
+
+                if (stopBtn) {
+                  stopBtn.addEventListener('click', function(event) {
+                    event.preventDefault();
+                    if (stopBtn.classList.contains('is-disabled')) return;
+                    setButtonState(stopBtn, false);
+                    cancelInline();
+                  });
+                }
+
+                state.elapsedTimer = setInterval(updateElapsed, 1000);
+                poll();
+              });
             })();
           })();
         </script>
@@ -1904,7 +2575,7 @@ class WPLG_Admin
             return 100;
         }
 
-        if (in_array($status, ['failed', 'cancelled'], true)) {
+        if (in_array($status, ['failed', 'cancelled', 'protected_stopped', 'stalled'], true)) {
             return 100;
         }
 
@@ -1956,6 +2627,14 @@ class WPLG_Admin
 
         if ($status === 'cancelled') {
             return 'Scan was cancelled.';
+        }
+
+        if ($status === 'protected_stopped') {
+            return 'Site under stress; scan auto-stopped to protect uptime. Retry in safe mode.';
+        }
+
+        if ($status === 'stalled') {
+            return 'Scan stalled due to missing progress updates. Retry with safe profile.';
         }
 
         return '';
@@ -2046,6 +2725,24 @@ class WPLG_Admin
         ];
 
         return implode(' + ', $parts);
+    }
+
+    private function format_scan_api_error(string $message): string
+    {
+        $normalized = strtolower(trim($message));
+        if ($normalized === '') {
+            return 'Scan request failed. Please retry.';
+        }
+        if (strpos($normalized, 'scan_limit_reached') !== false) {
+            return 'Monthly scan limit reached for this site. Open Billing to upgrade plan limits or wait for period reset.';
+        }
+        if (strpos($normalized, 'unauthorized') !== false || strpos($normalized, 'forbidden') !== false) {
+            return 'Authentication failed. Reconnect your site token in LaunchGuard Settings and retry.';
+        }
+        if (strpos($normalized, 'callback_not_configured') !== false) {
+            return 'LaunchGuard callback is not configured in cloud settings. Configure callback secrets, then retry.';
+        }
+        return $message;
     }
 
     private function redirect_with_notice(string $page, string $status, string $message, string $scanId = ''): void

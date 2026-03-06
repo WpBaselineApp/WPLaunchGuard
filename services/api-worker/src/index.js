@@ -204,8 +204,187 @@ function extractCallbackToken(request) {
   return '';
 }
 
+const SCAN_STATUSES = Object.freeze([
+  'queued',
+  'queued_local',
+  'running',
+  'dispatched',
+  'completed',
+  'failed',
+  'cancelled',
+  'protected_stopped',
+  'stalled'
+]);
+
+function normalizeScanStatus(value, fallback = 'queued') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'canceled') return 'cancelled';
+  if (SCAN_STATUSES.includes(normalized)) return normalized;
+  return fallback;
+}
+
 function isTerminalScanStatus(status) {
-  return ['completed', 'failed', 'cancelled'].includes(status);
+  return ['completed', 'failed', 'cancelled', 'protected_stopped', 'stalled'].includes(
+    normalizeScanStatus(status, '')
+  );
+}
+
+function clampPercent(value, fallback = 0) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return Math.max(0, Math.min(100, Number(fallback || 0)));
+  }
+  return Math.max(0, Math.min(100, Math.round(numeric)));
+}
+
+function normalizeProgressContract(summaryRaw, row, status) {
+  const summary = summaryRaw && typeof summaryRaw === 'object' && !Array.isArray(summaryRaw) ? summaryRaw : {};
+  const source =
+    summary.progress && typeof summary.progress === 'object' && !Array.isArray(summary.progress)
+      ? summary.progress
+      : {};
+
+  const totalUrls = Math.max(
+    0,
+    Number(
+      source.total_urls ??
+        summary.total_urls ??
+        summary.run_counts?.inputUrls ??
+        0
+    ) || 0
+  );
+  const completedUrls = Math.max(
+    0,
+    Number(
+      source.completed_urls ??
+        summary.completed_urls ??
+        source.current_index ??
+        summary.run_counts?.uniqueUrls ??
+        0
+    ) || 0
+  );
+
+  let percent = Number(source.percent ?? summary.progress_percent);
+  if (!Number.isFinite(percent) && totalUrls > 0) {
+    percent = (completedUrls / totalUrls) * 100;
+  }
+  if (!Number.isFinite(percent)) {
+    percent = isTerminalScanStatus(status) ? 100 : 0;
+  }
+
+  const currentUrl = String(
+    source.current_url ||
+      summary.current_url ||
+      source.last_completed_url ||
+      summary.last_completed_url ||
+      summary.target_url ||
+      row?.target_url ||
+      ''
+  ).trim();
+  const phase = String(source.phase || summary.phase || (isTerminalScanStatus(status) ? 'complete' : 'scanning')).trim() || 'scanning';
+  const lastUpdateAt = String(
+    source.last_update_at ||
+      summary.callback_received_at ||
+      row?.updated_at ||
+      row?.created_at ||
+      ''
+  ).trim();
+
+  return {
+    percent: clampPercent(percent, isTerminalScanStatus(status) ? 100 : 0),
+    current_url: currentUrl,
+    completed_urls: completedUrls,
+    total_urls: totalUrls,
+    phase,
+    last_update_at: lastUpdateAt
+  };
+}
+
+function normalizeSafetyContract(summaryRaw, row, status) {
+  const summary = summaryRaw && typeof summaryRaw === 'object' && !Array.isArray(summaryRaw) ? summaryRaw : {};
+  const source =
+    summary.safety && typeof summary.safety === 'object' && !Array.isArray(summary.safety)
+      ? summary.safety
+      : {};
+
+  const normalizedStatus = normalizeScanStatus(status, '');
+  const statusTriggered = normalizedStatus === 'protected_stopped' || normalizedStatus === 'stalled';
+  const reasonCode =
+    String(source.reason_code || '').trim() ||
+    (normalizedStatus === 'protected_stopped'
+      ? 'site_stress_guard'
+      : normalizedStatus === 'stalled'
+      ? 'stalled_progress_timeout'
+      : '');
+  const reasonDetail =
+    String(source.reason_detail || '').trim() ||
+    (normalizedStatus === 'protected_stopped'
+      ? 'Site was under stress; scan auto-stopped to protect uptime.'
+      : normalizedStatus === 'stalled'
+      ? 'No progress telemetry was received in the expected time window.'
+      : '');
+  const autoAction =
+    String(source.auto_action || '').trim() ||
+    (normalizedStatus === 'protected_stopped'
+      ? 'auto_stop'
+      : normalizedStatus === 'stalled'
+      ? 'mark_stalled'
+      : '');
+  const triggered = Boolean(source.triggered) || statusTriggered || !!reasonCode;
+  const triggeredAt = String(
+    source.triggered_at ||
+      summary.callback_received_at ||
+      row?.updated_at ||
+      row?.created_at ||
+      ''
+  ).trim();
+
+  return {
+    mode: String(source.mode || 'strict').trim() || 'strict',
+    triggered,
+    reason_code: reasonCode,
+    reason_detail: reasonDetail,
+    auto_action: autoAction,
+    triggered_at: triggered ? triggeredAt : ''
+  };
+}
+
+function ensureSummaryContract(summaryRaw, row, status) {
+  const summary = summaryRaw && typeof summaryRaw === 'object' && !Array.isArray(summaryRaw) ? summaryRaw : {};
+  const normalizedStatus = normalizeScanStatus(status, normalizeScanStatus(row?.status, 'queued'));
+  const progress = normalizeProgressContract(summary, row, normalizedStatus);
+  const safety = normalizeSafetyContract(summary, row, normalizedStatus);
+  const runStateCandidate = String(summary.run_state || '').trim().toLowerCase();
+  const runState =
+    runStateCandidate ||
+    (normalizedStatus === 'protected_stopped' || normalizedStatus === 'stalled'
+      ? normalizedStatus
+      : isTerminalScanStatus(normalizedStatus)
+      ? 'complete'
+      : 'running');
+
+  return {
+    ...summary,
+    run_state: runState,
+    progress,
+    progress_percent: progress.percent,
+    safety
+  };
+}
+
+const RUNNING_SCAN_STATUSES = Object.freeze(['running', 'dispatched', 'queued_local']);
+
+function parseIsoToMs(value) {
+  const ms = Date.parse(String(value || '').trim());
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+function getStalledTimeoutSeconds(env) {
+  const configured = Number(env?.SCAN_STALLED_TIMEOUT_SECONDS || 0);
+  if (!Number.isFinite(configured) || configured <= 0) {
+    return 600;
+  }
+  return Math.max(180, Math.round(configured));
 }
 
 function slugifyClientId(value, fallback = 'site') {
@@ -392,12 +571,15 @@ function deriveIssueTotalsFromSummary(summary) {
 }
 
 function enrichScanRow(row) {
-  const summary = parseSummaryObject(row.summary_json);
+  const summaryRaw = parseSummaryObject(row.summary_json);
   const scanOptions = normalizeScanOptions(safeParseJson(row.options_json), DEFAULT_SCAN_OPTIONS);
   const sourceContext = normalizeSourceContext(safeParseJson(row.source_context_json));
   const targetUrl = normalizeTargetUrl(row.target_url);
+  const status = normalizeScanStatus(row.status, 'queued');
+  const summary = ensureSummaryContract(summaryRaw, row, status);
   return {
     ...row,
+    status,
     target_url: targetUrl,
     scan_options: scanOptions,
     source_context: sourceContext,
@@ -870,7 +1052,7 @@ async function getScan(request, scanId, env) {
     .bind(scanId)
     .all();
 
-  const enrichedScan = enrichScanRow(row);
+  const enrichedScan = await hydrateScanForResponse(env, row);
   const dbIssueTotals = issueTotals.results || [];
   const derivedIssueTotals = deriveIssueTotalsFromSummary(enrichedScan.summary || {});
 
@@ -912,7 +1094,7 @@ async function listSiteScans(request, env, siteId, limitValue) {
       .all();
   }
 
-  const scans = (result.results || []).map(enrichScanRow);
+  const scans = await Promise.all((result.results || []).map((row) => hydrateScanForResponse(env, row)));
   return json({ scans });
 }
 
@@ -1309,6 +1491,13 @@ function mergeSummary(existingSummaryRaw, patch) {
 
   if (baseObject.progress || patchObject.progress) {
     merged.progress = mergeProgressSnapshot(baseObject.progress, patchObject.progress);
+    const patchLastUpdate = String(
+      (patchObject.progress && patchObject.progress.last_update_at) || patchObject.callback_received_at || ''
+    ).trim();
+    const baseLastUpdate = String(
+      (baseObject.progress && baseObject.progress.last_update_at) || ''
+    ).trim();
+    merged.progress.last_update_at = patchLastUpdate || baseLastUpdate || nowIso();
   }
 
   const baseProgressPercent = coerceFiniteNumber(baseObject.progress_percent);
@@ -1323,7 +1512,32 @@ function mergeSummary(existingSummaryRaw, patch) {
     }
   }
 
+  if (baseObject.safety || patchObject.safety) {
+    const baseSafety =
+      baseObject.safety && typeof baseObject.safety === 'object' && !Array.isArray(baseObject.safety)
+        ? baseObject.safety
+        : {};
+    const patchSafety =
+      patchObject.safety && typeof patchObject.safety === 'object' && !Array.isArray(patchObject.safety)
+        ? patchObject.safety
+        : {};
+    merged.safety = {
+      ...baseSafety,
+      ...patchSafety,
+      triggered: Boolean(baseSafety.triggered || patchSafety.triggered)
+    };
+  }
+
   return merged;
+}
+
+function extractScanIdFromActionPath(pathname, actionSuffix) {
+  const prefix = '/v1/scans/';
+  if (!pathname.startsWith(prefix) || !pathname.endsWith(actionSuffix)) {
+    return '';
+  }
+  const idPart = pathname.slice(prefix.length, pathname.length - actionSuffix.length).trim();
+  return idPart.replace(/\/+$/, '').trim();
 }
 
 function getPublicApiBase(env) {
@@ -1403,6 +1617,204 @@ function extractReportTokenFromReferer(request, scanId) {
   }
 }
 
+function parseCookies(headerValue) {
+  const header = String(headerValue || '').trim();
+  if (!header) return {};
+  return header
+    .split(';')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .reduce((acc, pair) => {
+      const index = pair.indexOf('=');
+      if (index <= 0) return acc;
+      const key = pair.slice(0, index).trim();
+      const value = pair.slice(index + 1).trim();
+      if (!key) return acc;
+      try {
+        acc[key] = decodeURIComponent(value);
+      } catch {
+        acc[key] = value;
+      }
+      return acc;
+    }, {});
+}
+
+function reportAccessCookieName(scanId) {
+  const token = String(scanId || '')
+    .replace(/[^a-z0-9]/gi, '')
+    .toLowerCase()
+    .slice(0, 24);
+  return token ? `wplg_rt_${token}` : 'wplg_rt';
+}
+
+function extractReportTokenFromCookie(request, scanId) {
+  const cookies = parseCookies(request.headers.get('cookie'));
+  const cookieName = reportAccessCookieName(scanId);
+  return String(cookies[cookieName] || '').trim();
+}
+
+function buildReportAccessCookie(scanId, token) {
+  const cookieName = reportAccessCookieName(scanId);
+  const encodedToken = encodeURIComponent(String(token || '').trim());
+  const safePath = `/v1/reports/${encodeURIComponent(String(scanId || '').trim())}/`;
+  return `${cookieName}=${encodedToken}; Path=${safePath}; Max-Age=7200; HttpOnly; Secure; SameSite=Lax`;
+}
+
+async function reportObjectExists(env, objectKey) {
+  if (!env.ARTIFACTS_BUCKET || !objectKey) return false;
+  if (typeof env.ARTIFACTS_BUCKET.head === 'function') {
+    const metadata = await env.ARTIFACTS_BUCKET.head(objectKey);
+    return Boolean(metadata);
+  }
+  const object = await env.ARTIFACTS_BUCKET.get(objectKey);
+  return Boolean(object);
+}
+
+async function checkReportArtifactsReady(env, prefix) {
+  const normalizedPrefix = String(prefix || '').trim().replace(/\/+$/, '');
+  if (!normalizedPrefix) {
+    return { ready: false, missing: ['report_prefix_missing'] };
+  }
+  if (!env.ARTIFACTS_BUCKET) {
+    return { ready: false, missing: ['report_storage_missing'] };
+  }
+
+  const requiredPaths = ['qa_html/index.html', 'issues.json', 'run_meta.json'];
+  const missing = [];
+  for (const relativePath of requiredPaths) {
+    const key = `${normalizedPrefix}/${relativePath}`;
+    const exists = await reportObjectExists(env, key);
+    if (!exists) {
+      missing.push(relativePath);
+    }
+  }
+  return { ready: missing.length === 0, missing };
+}
+
+async function reconcileReportPublishingState(env, scanId, summaryRaw, status) {
+  const summary =
+    summaryRaw && typeof summaryRaw === 'object' && !Array.isArray(summaryRaw)
+      ? { ...summaryRaw }
+      : {};
+  const normalizedStatus = normalizeScanStatus(status, '');
+  const prefix = String(summary.report_r2_prefix || '').trim().replace(/\/+$/, '');
+  if (!prefix) {
+    return summary;
+  }
+
+  const shouldCheck = ['completed', 'failed', 'cancelled', 'protected_stopped', 'stalled'].includes(
+    normalizedStatus
+  );
+  if (!shouldCheck) {
+    return summary;
+  }
+
+  const readiness = await checkReportArtifactsReady(env, prefix);
+  const reportToken =
+    String(summary.report_public_token || '').trim() || crypto.randomUUID().replace(/-/g, '');
+  summary.report_public_token = reportToken;
+  summary.report_r2_prefix = prefix;
+
+  if (readiness.ready) {
+    summary.report_index_url = buildScanReportIndexUrl(env, scanId, reportToken);
+    summary.report_publishing = false;
+    delete summary.report_pending_missing;
+    return summary;
+  }
+
+  summary.report_index_url = '';
+  summary.report_publishing = true;
+  summary.report_pending_missing = readiness.missing;
+  return summary;
+}
+
+async function maybeMarkScanStalled(env, row) {
+  const currentStatus = normalizeScanStatus(row?.status, 'queued');
+  if (!RUNNING_SCAN_STATUSES.includes(currentStatus)) {
+    return row;
+  }
+
+  const summary = ensureSummaryContract(parseSummaryObject(row?.summary_json), row, currentStatus);
+  const timeoutSeconds = getStalledTimeoutSeconds(env);
+  const lastUpdateMs = parseIsoToMs(
+    summary.progress?.last_update_at || summary.callback_received_at || row?.updated_at || row?.created_at
+  );
+  if (!lastUpdateMs) {
+    return row;
+  }
+
+  const ageSeconds = Math.max(0, Math.round((Date.now() - lastUpdateMs) / 1000));
+  if (ageSeconds < timeoutSeconds) {
+    return row;
+  }
+
+  const timestamp = nowIso();
+  const reason = `No progress callback for ${ageSeconds} seconds.`;
+  const stalledSummary = ensureSummaryContract(
+    mergeSummary(row.summary_json, {
+      callback_status: 'stalled',
+      callback_received_at: timestamp,
+      run_state: 'stalled',
+      progress_percent: 100,
+      progress: {
+        phase: 'stalled',
+        percent: 100,
+        last_update_at: timestamp
+      },
+      safety: {
+        mode: 'strict',
+        triggered: true,
+        reason_code: 'stalled_progress_timeout',
+        reason_detail: reason,
+        auto_action: 'mark_stalled',
+        triggered_at: timestamp
+      }
+    }),
+    row,
+    'stalled'
+  );
+
+  await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
+    .bind('stalled', timestamp, timestamp, JSON.stringify(stalledSummary), row.id)
+    .run();
+
+  return {
+    ...row,
+    status: 'stalled',
+    updated_at: timestamp,
+    completed_at: timestamp,
+    summary_json: JSON.stringify(stalledSummary)
+  };
+}
+
+async function hydrateScanForResponse(env, row) {
+  const maybeStalledRow = await maybeMarkScanStalled(env, row);
+  const enriched = enrichScanRow(maybeStalledRow);
+  const refreshedSummary = await reconcileReportPublishingState(
+    env,
+    String(enriched.id || ''),
+    enriched.summary,
+    enriched.status
+  );
+  const normalizedSummary = ensureSummaryContract(refreshedSummary, enriched, enriched.status);
+  if (JSON.stringify(normalizedSummary) !== JSON.stringify(enriched.summary)) {
+    const updatedAt = nowIso();
+    await env.DB.prepare('UPDATE scans SET updated_at = ?, summary_json = ? WHERE id = ?')
+      .bind(updatedAt, JSON.stringify(normalizedSummary), enriched.id)
+      .run();
+    return {
+      ...enriched,
+      updated_at: updatedAt,
+      summary: normalizedSummary
+    };
+  }
+
+  return {
+    ...enriched,
+    summary: normalizedSummary
+  };
+}
+
 async function getScanReportAsset(request, env, scanId, assetPath, url) {
   if (!env.ARTIFACTS_BUCKET) {
     return json({ error: 'report_storage_missing' }, 503);
@@ -1421,7 +1833,8 @@ async function getScanReportAsset(request, env, scanId, assetPath, url) {
   const expectedToken = String(summary.report_public_token || '').trim();
   const tokenFromQuery = String(url.searchParams.get('t') || '').trim();
   const tokenFromReferer = extractReportTokenFromReferer(request, scanId);
-  const providedToken = tokenFromQuery || tokenFromReferer;
+  const tokenFromCookie = extractReportTokenFromCookie(request, scanId);
+  const providedToken = tokenFromQuery || tokenFromReferer || tokenFromCookie;
   if (!expectedToken || !providedToken || expectedToken !== providedToken) {
     return unauthorized();
   }
@@ -1441,9 +1854,14 @@ async function getScanReportAsset(request, env, scanId, assetPath, url) {
   headers.set('content-type', contentTypeForReportAsset(assetPath));
   headers.set('cache-control', 'private, max-age=60');
   headers.set('x-robots-tag', 'noindex, nofollow');
+  headers.set('referrer-policy', 'strict-origin-when-cross-origin');
 
   if (reportObject.httpEtag) {
     headers.set('etag', reportObject.httpEtag);
+  }
+
+  if (tokenFromQuery) {
+    headers.append('set-cookie', buildReportAccessCookie(scanId, expectedToken));
   }
 
   return new Response(reportObject.body, { status: 200, headers });
@@ -1519,6 +1937,70 @@ async function dispatchScanToGitHub(env, scan, site) {
   };
 }
 
+async function cancelScan(request, env, scanId) {
+  const row = await env.DB.prepare('SELECT * FROM scans WHERE id = ?').bind(scanId).first();
+  if (!row) {
+    return notFound();
+  }
+
+  const authorized = await authorizeSiteRequest(request, env, row.site_id);
+  if (!authorized) {
+    return unauthorized();
+  }
+
+  const existingStatus = normalizeScanStatus(row.status, 'queued');
+  const timestamp = nowIso();
+  if (isTerminalScanStatus(existingStatus)) {
+    const summary = ensureSummaryContract(parseSummaryObject(row.summary_json), row, existingStatus);
+    return json({
+      ok: true,
+      scan_id: scanId,
+      status: existingStatus,
+      already_terminal: true,
+      summary
+    });
+  }
+
+  const body = await parseJson(request);
+  const reasonDetail = String(body?.reason || '').trim() || 'Cancelled by administrator from WordPress.';
+  const mergedSummary = mergeSummary(row.summary_json, {
+    callback_status: 'cancelled',
+    callback_received_at: timestamp,
+    run_state: 'cancelled',
+    progress_percent: 100,
+    progress: {
+      phase: 'cancelled',
+      percent: 100,
+      last_update_at: timestamp
+    },
+    cancellation: {
+      requested_at: timestamp,
+      requested_by: 'admin',
+      reason_detail: reasonDetail
+    },
+    safety: {
+      mode: 'strict',
+      triggered: true,
+      reason_code: 'manual_cancel',
+      reason_detail: reasonDetail,
+      auto_action: 'manual_stop',
+      triggered_at: timestamp
+    }
+  });
+  const summary = ensureSummaryContract(mergedSummary, row, 'cancelled');
+
+  await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
+    .bind('cancelled', timestamp, timestamp, JSON.stringify(summary), scanId)
+    .run();
+
+  return json({
+    ok: true,
+    scan_id: scanId,
+    status: 'cancelled',
+    summary
+  });
+}
+
 async function queueConsumer(batch, env) {
   const timestamp = nowIso();
 
@@ -1589,8 +2071,8 @@ async function handleScanCallback(request, env) {
   }
 
   const scanId = String(body.scan_id).trim();
-  const status = String(body.status).trim().toLowerCase();
-  if (!['running', 'dispatched', 'completed', 'failed', 'cancelled'].includes(status)) {
+  const status = normalizeScanStatus(body.status, '');
+  if (!status) {
     return badRequest('invalid status');
   }
 
@@ -1599,24 +2081,40 @@ async function handleScanCallback(request, env) {
     return notFound();
   }
 
+  const existingStatus = normalizeScanStatus(existing.status, 'queued');
   const summaryPatch = body.summary && typeof body.summary === 'object' ? body.summary : {};
+
+  if (isTerminalScanStatus(existingStatus) && status !== existingStatus) {
+    const ignoredSummary = ensureSummaryContract(
+      mergeSummary(existing.summary_json, {
+        callback_received_at: nowIso(),
+        callback_status: status,
+        callback_ignored: {
+          attempted_status: status,
+          ignored_at: nowIso(),
+          reason: `scan_already_terminal:${existingStatus}`
+        }
+      }),
+      existing,
+      existingStatus
+    );
+    await env.DB.prepare('UPDATE scans SET updated_at = ?, summary_json = ? WHERE id = ?')
+      .bind(nowIso(), JSON.stringify(ignoredSummary), scanId)
+      .run();
+    return json({ ok: true, scan_id: scanId, status: existingStatus, ignored: true });
+  }
+
   const summary = mergeSummary(existing.summary_json, {
     callback_received_at: nowIso(),
     callback_status: status,
     ...summaryPatch
   });
 
-  const r2Prefix = String(summary.report_r2_prefix || '').trim().replace(/\/+$/, '');
-  if (r2Prefix) {
-    const reportToken = String(summary.report_public_token || '').trim() || crypto.randomUUID().replace(/-/g, '');
-    summary.report_public_token = reportToken;
-    summary.report_r2_prefix = r2Prefix;
-    summary.report_index_url = buildScanReportIndexUrl(env, scanId, reportToken);
-  }
-
+  const summaryWithReportState = await reconcileReportPublishingState(env, scanId, summary, status);
+  const normalizedSummary = ensureSummaryContract(summaryWithReportState, existing, status);
   const completedAt = isTerminalScanStatus(status) ? nowIso() : existing.completed_at;
   await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, completed_at = ?, summary_json = ? WHERE id = ?')
-    .bind(status, nowIso(), completedAt || null, JSON.stringify(summary), scanId)
+    .bind(status, nowIso(), completedAt || null, JSON.stringify(normalizedSummary), scanId)
     .run();
 
   return json({ ok: true, scan_id: scanId, status });
@@ -1664,6 +2162,12 @@ export default {
 
     if (request.method === 'POST' && pathname === '/v1/scans') {
       return createScan(request, env);
+    }
+
+    if (request.method === 'POST' && pathname.startsWith('/v1/scans/') && pathname.endsWith('/cancel')) {
+      const scanId = extractScanIdFromActionPath(pathname, '/cancel');
+      if (!scanId) return notFound();
+      return cancelScan(request, env, scanId);
     }
 
     if (request.method === 'GET' && pathname.startsWith('/v1/scans/')) {

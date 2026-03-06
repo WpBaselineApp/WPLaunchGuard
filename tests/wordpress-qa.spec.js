@@ -24,6 +24,7 @@ const LIGHTHOUSE_DIR = path.join(REPORTS_DIR, 'lighthouse');
 const SCREENSHOTS_DIR = path.join(REPORTS_DIR, 'screenshots');
 const SHARD_DIR = path.join(REPORTS_DIR, '.tmp', 'shards');
 const SHARD_RUN_ID = String(process.env.RUN_STARTED_AT || '').trim();
+const RUN_STATE_MARKER_JSON = path.join(REPORTS_DIR, '.scan_state.json');
 const RESULTS_CSV = path.join(REPORTS_DIR, 'results.csv');
 const ISSUES_TSV = path.join(REPORTS_DIR, 'issues.tsv');
 const ISSUES_JSON = path.join(REPORTS_DIR, 'issues.json');
@@ -136,6 +137,10 @@ const LAUNCHGUARD_PROGRESS_ENABLED = Boolean(
 const CLOUD_SCAN_MODE = Boolean(LAUNCHGUARD_SCAN_ID);
 const QA_URL_LIMIT = Math.max(0, Number(process.env.QA_URL_LIMIT || (CLOUD_SCAN_MODE ? 60 : 0)));
 const URL_PACE_MS = Math.max(0, Number(process.env.URL_PACE_MS || (CLOUD_SCAN_MODE ? 400 : 0)));
+const SITE_STRESS_TIMEOUT_THRESHOLD = Math.max(2, Number(process.env.SITE_STRESS_TIMEOUT_THRESHOLD || 3));
+const SITE_STRESS_NAV_FAILURE_THRESHOLD = Math.max(3, Number(process.env.SITE_STRESS_NAV_FAILURE_THRESHOLD || 4));
+const SITE_STRESS_HTTP5XX_THRESHOLD = Math.max(2, Number(process.env.SITE_STRESS_HTTP5XX_THRESHOLD || 3));
+const SITE_STRESS_TIMEOUT_RATIO_THRESHOLD = Math.max(0.2, Number(process.env.SITE_STRESS_TIMEOUT_RATIO_THRESHOLD || 0.4));
 
 const results = [];
 const issues = [];
@@ -143,6 +148,16 @@ const issueSummary = new Map();
 const blockedSamples = [];
 const linkStatusCache = new Map();
 let activeTemplateKeyForIssues = '';
+const siteSafetyState = {
+  triggered: false,
+  status: '',
+  reason: '',
+  triggeredAt: '',
+  scanned: 0,
+  timeoutFailures: 0,
+  navFailures: 0,
+  http5xxFailures: 0
+};
 
 function loadUrls() {
   if (!fs.existsSync(DATA_PATH)) {
@@ -2315,6 +2330,9 @@ function writeWorkerShard(testInfo, totalInputUrls) {
     workerIndex,
     pid: process.pid,
     totalInputUrls: totalInputUrls || 0,
+    runState: siteSafetyState.triggered ? siteSafetyState.status : '',
+    runStateReason: siteSafetyState.reason || '',
+    runStateTriggeredAt: siteSafetyState.triggeredAt || '',
     results,
     issues,
     blockedSamples
@@ -2328,7 +2346,7 @@ function shouldEmitProgress(projectName) {
   return String(projectName || '').trim() === LAUNCHGUARD_PROGRESS_PROJECT;
 }
 
-async function postScanProgress(summaryPatch) {
+async function postScanProgress(summaryPatch, status = 'running') {
   if (!LAUNCHGUARD_PROGRESS_ENABLED) return;
 
   try {
@@ -2340,7 +2358,7 @@ async function postScanProgress(summaryPatch) {
       },
       body: JSON.stringify({
         scan_id: LAUNCHGUARD_SCAN_ID,
-        status: 'running',
+        status,
         summary: summaryPatch
       })
     });
@@ -2351,6 +2369,121 @@ async function postScanProgress(summaryPatch) {
   } catch {
     // Swallow progress callback failures so QA execution is never blocked.
   }
+}
+
+function writeRunStateMarker(state, reason) {
+  try {
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+    fs.writeFileSync(
+      RUN_STATE_MARKER_JSON,
+      JSON.stringify(
+        {
+          generatedAt: new Date().toISOString(),
+          state,
+          reason: String(reason || '').slice(0, 500)
+        },
+        null,
+        2
+      ),
+      'utf8'
+    );
+  } catch {
+    // best effort marker
+  }
+}
+
+async function triggerSiteProtection(status, reason, url, projectName, index) {
+  if (!CLOUD_SCAN_MODE || siteSafetyState.triggered) return;
+
+  const safeStatus = ['protected_stopped', 'stalled'].includes(String(status || '').toLowerCase())
+    ? String(status).toLowerCase()
+    : 'protected_stopped';
+  const reasonText = String(reason || '').trim() || 'Site stress guard triggered.';
+  const timestamp = new Date().toISOString();
+
+  siteSafetyState.triggered = true;
+  siteSafetyState.status = safeStatus;
+  siteSafetyState.reason = reasonText;
+  siteSafetyState.triggeredAt = timestamp;
+  writeRunStateMarker(safeStatus, reasonText);
+
+  addIssue({
+    Category: 'functionality',
+    Severity: 'critical',
+    Title: safeStatus === 'stalled' ? 'Scan Stalled' : 'Scan Auto-Stopped: Site Under Stress',
+    Description:
+      safeStatus === 'stalled'
+        ? 'Scan progress stalled and was stopped for safety. Review site health and retry in safe mode.'
+        : 'Site health signals indicate stress during QA. Scan auto-stopped to protect uptime.',
+    Element: reasonText,
+    Recommendation: 'Review hosting/CDN/WAF health, then retry with quick mode and reduced coverage.',
+    URL: url || '',
+    _source: 'safety',
+    isEnvironment: true,
+    actionability: 'warning',
+    ownership: 'first_party',
+    journeyScope: 'global',
+    templateKey: ''
+  });
+
+  const totalRuns = Math.max(1, urls.length);
+  const completedRuns = Math.max(0, Math.min(totalRuns, index + 1));
+  await postScanProgress(
+    {
+      run_state: safeStatus,
+      progress_percent: 100,
+      progress: {
+        phase: safeStatus,
+        percent: 100,
+        current_url: url || '',
+        current_index: completedRuns,
+        completed_urls: completedRuns,
+        total_urls: totalRuns,
+        project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT,
+        last_update_at: timestamp
+      },
+      safety: {
+        mode: 'strict',
+        triggered: true,
+        reason_code: safeStatus === 'stalled' ? 'scan_stalled' : 'site_stress_guard',
+        reason_detail: reasonText,
+        auto_action: safeStatus === 'stalled' ? 'mark_stalled' : 'auto_stop',
+        triggered_at: timestamp
+      }
+    },
+    safeStatus
+  );
+}
+
+async function evaluateSiteSafety(result, url, projectName, index) {
+  if (!CLOUD_SCAN_MODE || siteSafetyState.triggered) return;
+
+  siteSafetyState.scanned += 1;
+  const sample = [result.error, result.blockedReason, result.linkCheckErrorsSample].filter(Boolean).join(' | ').toLowerCase();
+  const timedOut =
+    sample.includes('timeout') ||
+    sample.includes('timed out') ||
+    sample.includes('err_timed_out');
+  const mainStatus = Number(result.mainStatus || 0);
+  const navFailed = result.status === 'BLOCKED' || result.status === 'ERROR';
+  const server5xx = Number.isFinite(mainStatus) && mainStatus >= 500 && mainStatus < 600;
+
+  if (timedOut) siteSafetyState.timeoutFailures += 1;
+  if (navFailed) siteSafetyState.navFailures += 1;
+  if (server5xx) siteSafetyState.http5xxFailures += 1;
+
+  const scanned = Math.max(1, siteSafetyState.scanned);
+  const timeoutRatio = siteSafetyState.timeoutFailures / scanned;
+  const shouldTrigger =
+    siteSafetyState.timeoutFailures >= SITE_STRESS_TIMEOUT_THRESHOLD ||
+    siteSafetyState.navFailures >= SITE_STRESS_NAV_FAILURE_THRESHOLD ||
+    siteSafetyState.http5xxFailures >= SITE_STRESS_HTTP5XX_THRESHOLD ||
+    (scanned >= 10 && timeoutRatio >= SITE_STRESS_TIMEOUT_RATIO_THRESHOLD);
+
+  if (!shouldTrigger) return;
+
+  const reason = `timeouts=${siteSafetyState.timeoutFailures}, nav_failures=${siteSafetyState.navFailures}, http_5xx=${siteSafetyState.http5xxFailures}, scanned=${scanned}`;
+  await triggerSiteProtection('protected_stopped', reason, url, projectName, index);
 }
 
 async function notifyScanUrlStarted(projectName, index, url) {
@@ -2400,6 +2533,7 @@ test.describe('WordPress QA suite', () => {
 
   for (const [index, url] of urls.entries()) {
     test(`QA: ${url}`, async ({ page, request }) => {
+      test.skip(siteSafetyState.triggered, `Site protection active: ${siteSafetyState.reason || 'scan stopped for safety'}`);
       screenshotCounter = 0;
       const projectName = test.info().project.name;
       const projectMeta = test.info().project.metadata || {};
@@ -3765,6 +3899,7 @@ test.describe('WordPress QA suite', () => {
         result.error = error.message;
       } finally {
         await notifyScanUrlCompleted(projectName, index, url);
+        await evaluateSiteSafety(result, url, projectName, index);
         if (fallbackContext) {
           await fallbackContext.close().catch(() => {});
         }

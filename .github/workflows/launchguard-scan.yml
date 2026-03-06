@@ -260,6 +260,8 @@ jobs:
           echo "effective_responsive_enabled=$RESPONSIVE_ENABLED" >> "$GITHUB_OUTPUT"
           echo "effective_viewport_preset=$VIEWPORT_PRESET" >> "$GITHUB_OUTPUT"
           echo "effective_progress_project=$PROGRESS_PROJECT" >> "$GITHUB_OUTPUT"
+          echo "forced_final_status=" >> "$GITHUB_OUTPUT"
+          echo "forced_run_state=" >> "$GITHUB_OUTPUT"
 
           CMD=(npm run qa -- "${{ inputs.client_name }}" "--projects=${PROJECTS_CSV}" "--workers=1")
           if [[ -n "$TARGET_SINGLE" ]]; then
@@ -327,6 +329,65 @@ jobs:
               -H "x-scan-callback-token: ${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN}" \
               --data "$payload" >/dev/null || true
           }
+
+          send_terminal_callback() {
+            local status="$1"
+            local reason="$2"
+            if [[ -z "${LAUNCHGUARD_PROGRESS_CALLBACK_URL:-}" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
+              return
+            fi
+            local payload
+            payload=$(jq -cn \
+              --arg scan_id "${{ inputs.scan_id }}" \
+              --arg status "$status" \
+              --arg reason "$reason" \
+              '{
+                scan_id: $scan_id,
+                status: $status,
+                summary: {
+                  run_state: $status,
+                  progress_percent: 100,
+                  progress: {
+                    phase: $status,
+                    percent: 100,
+                    last_update_at: (now | todateiso8601)
+                  },
+                  safety: {
+                    mode: "strict",
+                    triggered: true,
+                    reason_code: (if $status == "protected_stopped" then "preflight_site_stress" else "scan_stalled" end),
+                    reason_detail: $reason,
+                    auto_action: (if $status == "protected_stopped" then "auto_stop" else "mark_stalled" end),
+                    triggered_at: (now | todateiso8601)
+                  }
+                }
+              }')
+
+            curl -sS -m 8 -X POST "${LAUNCHGUARD_PROGRESS_CALLBACK_URL}" \
+              -H "content-type: application/json" \
+              -H "x-scan-callback-token: ${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN}" \
+              --data "$payload" >/dev/null || true
+          }
+
+          PREFLIGHT_URL="$TARGET_SINGLE"
+          if [[ -z "$PREFLIGHT_URL" ]]; then
+            PREFLIGHT_URL="$REST_BASE_INPUT"
+          fi
+          if [[ -n "$PREFLIGHT_URL" ]]; then
+            PREFLIGHT_CODE=$(curl -sS -o /tmp/wplg-preflight-body.txt -w "%{http_code}" --max-time 12 --connect-timeout 5 "$PREFLIGHT_URL" || echo "000")
+            PREFLIGHT_TIME=$(curl -sS -o /dev/null -w "%{time_total}" --max-time 12 --connect-timeout 5 "$PREFLIGHT_URL" || echo "12.000")
+            PREFLIGHT_TIME_INT=$(printf '%s' "$PREFLIGHT_TIME" | awk -F'.' '{print $1}')
+
+            if [[ "$PREFLIGHT_CODE" == "000" || "$PREFLIGHT_CODE" -ge 500 || "$PREFLIGHT_TIME_INT" -ge 8 ]]; then
+              PROTECT_REASON="Site preflight failed or was too slow (status=${PREFLIGHT_CODE}, time=${PREFLIGHT_TIME}s). Scan auto-stopped to protect uptime."
+              echo "$PROTECT_REASON"
+              send_terminal_callback "protected_stopped" "$PROTECT_REASON"
+              echo "forced_final_status=protected_stopped" >> "$GITHUB_OUTPUT"
+              echo "forced_run_state=protected_stopped" >> "$GITHUB_OUTPUT"
+              echo "exit_code=0" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
 
           echo "Running command: ${CMD[*]}"
           LAST_PROGRESS_URL=""
@@ -453,14 +514,12 @@ jobs:
         run: |
           set +e
           EXIT_CODE="${{ steps.run_qa.outputs.exit_code }}"
+          FORCED_STATUS="${{ steps.run_qa.outputs.forced_final_status }}"
           if [[ -z "$EXIT_CODE" ]]; then
             EXIT_CODE="1"
           fi
 
-          FINAL_STATUS="completed"
-          if [[ "$EXIT_CODE" != "0" ]]; then
-            FINAL_STATUS="failed"
-          fi
+          FINAL_STATUS="$FORCED_STATUS"
 
           TARGET_URL="$CALLBACK_SECRET_URL"
           if [[ -n "${{ inputs.callback_url }}" ]]; then
@@ -494,6 +553,17 @@ jobs:
           fi
           if ! printf '%s' "$SUMMARY_JSON" | jq -e . >/dev/null 2>&1; then
             SUMMARY_JSON='{}'
+          fi
+          SUMMARY_RUN_STATE=$(printf '%s' "$SUMMARY_JSON" | jq -r '.run_state // ""' 2>/dev/null || echo "")
+
+          if [[ -z "$FINAL_STATUS" && ( "$SUMMARY_RUN_STATE" == "protected_stopped" || "$SUMMARY_RUN_STATE" == "stalled" ) ]]; then
+            FINAL_STATUS="$SUMMARY_RUN_STATE"
+          fi
+          if [[ -z "$FINAL_STATUS" ]]; then
+            FINAL_STATUS="completed"
+            if [[ "$EXIT_CODE" != "0" ]]; then
+              FINAL_STATUS="failed"
+            fi
           fi
 
           PAYLOAD=$(jq -cn \
@@ -551,7 +621,7 @@ jobs:
             --data "$PAYLOAD"
 
       - name: Fail job if QA failed
-        if: steps.run_qa.outputs.exit_code != '0'
+        if: steps.run_qa.outputs.exit_code != '0' && steps.run_qa.outputs.forced_final_status == ''
         run: |
           echo "QA command exited with code ${{ steps.run_qa.outputs.exit_code }}"
           exit 1
