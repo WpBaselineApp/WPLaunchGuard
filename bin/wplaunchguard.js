@@ -21,6 +21,7 @@ function exitWithHelp(code = 1) {
       `  ${name} init <clientname> [--url=https://example.com/]`,
       `  ${name} run <clientname> [--quick|--full|--projects=..|--sitemap=..|--sitemap-limit=..|--single=..|--auth-user=.. --auth-pass=..]`,
       `  ${name} html <clientname>`,
+      `  ${name} pdf <clientname>`,
       `  ${name} report <clientname>`,
       `  ${name} share <clientname>`,
       ``,
@@ -133,6 +134,19 @@ if (command === 'report') {
     process.exit(1);
   }
   const script = path.join(packageRoot, 'reporting', 'generate-dashboard.js');
+  spawnNode(script, [clientName], {});
+}
+
+if (command === 'pdf') {
+  let clientName = rest[0];
+  if (!clientName) exitWithHelp(1);
+  try {
+    clientName = validateClientId(clientName);
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+  const script = path.join(packageRoot, 'reporting', 'generate-pdf-report.js');
   spawnNode(script, [clientName], {});
 }
 

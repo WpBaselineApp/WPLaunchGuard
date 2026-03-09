@@ -450,6 +450,9 @@ class WPLG_Admin
             echo '<li><span>Plan</span><strong>' . esc_html($planId) . ' <span class="wplg-inline-muted">(' . esc_html($billingStatus) . ')</span></strong></li>';
             echo '<li><span>Scans</span><strong>' . esc_html((string) $scansUsed) . ' / ' . esc_html((string) $scansLimit) . '</strong></li>';
             echo '<li><span>Sites Limit</span><strong>' . esc_html((string) ($data['sites_limit'] ?? 0)) . '</strong></li>';
+            echo '<li><span>Client PDF</span><strong>' . (!empty($data['pdf_export']) ? 'Included' : 'Not included') . '</strong></li>';
+            echo '<li><span>Evidence ZIP</span><strong>' . (!empty($data['zip_export']) ? 'Included' : 'Not included') . '</strong></li>';
+            echo '<li><span>White-label</span><strong>' . (!empty($data['whitelabel']) ? 'Included' : 'Not included') . '</strong></li>';
             echo '</ul>';
             echo '<div class="wplg-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $usagePercent) . '">';
             echo '<span style="width:' . esc_attr((string) $usagePercent) . '%"></span>';
@@ -541,6 +544,10 @@ class WPLG_Admin
             return;
         }
 
+        $limits = $this->fetch_limits($siteId);
+        $planFeatures = $this->extract_plan_features($limits);
+        $whitelabelEnabled = !empty($planFeatures['whitelabel']);
+
         $brandingData = [
             'brand_name' => '',
             'logo_url' => '',
@@ -555,22 +562,29 @@ class WPLG_Admin
             $brandingData = array_merge($brandingData, $response['data']['branding']);
         }
 
+        if (!$whitelabelEnabled) {
+            echo '<div class="notice notice-warning"><p>White-label branding is available on the Agency plan. Upgrade to unlock PDF/client branding controls.</p></div>';
+        }
+
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
         echo '<input type="hidden" name="action" value="wplg_save_branding" />';
         wp_nonce_field('wplg_save_branding');
 
         echo '<table class="form-table" role="presentation">';
-        echo '<tr><th scope="row"><label for="wplg_brand_name">Brand Name</label></th><td><input class="regular-text" type="text" id="wplg_brand_name" name="brand_name" value="' . esc_attr((string) $brandingData['brand_name']) . '" /></td></tr>';
-        echo '<tr><th scope="row"><label for="wplg_logo_url">Logo URL</label></th><td><input class="regular-text" type="url" id="wplg_logo_url" name="logo_url" value="' . esc_attr((string) $brandingData['logo_url']) . '" /></td></tr>';
-        echo '<tr><th scope="row"><label for="wplg_primary_color">Primary Color</label></th><td><input type="color" id="wplg_primary_color" name="primary_color" value="' . esc_attr((string) $brandingData['primary_color']) . '" /></td></tr>';
-        echo '<tr><th scope="row"><label for="wplg_accent_color">Accent Color</label></th><td><input type="color" id="wplg_accent_color" name="accent_color" value="' . esc_attr((string) $brandingData['accent_color']) . '" /></td></tr>';
-        echo '<tr><th scope="row"><label for="wplg_footer_text">Footer Text</label></th><td><textarea class="large-text" rows="3" id="wplg_footer_text" name="footer_text">' . esc_textarea((string) $brandingData['footer_text']) . '</textarea></td></tr>';
+        $disabledAttr = $whitelabelEnabled ? '' : ' disabled="disabled"';
+        echo '<tr><th scope="row"><label for="wplg_brand_name">Brand Name</label></th><td><input class="regular-text" type="text" id="wplg_brand_name" name="brand_name" value="' . esc_attr((string) $brandingData['brand_name']) . '"' . $disabledAttr . ' /></td></tr>';
+        echo '<tr><th scope="row"><label for="wplg_logo_url">Logo URL</label></th><td><input class="regular-text" type="url" id="wplg_logo_url" name="logo_url" value="' . esc_attr((string) $brandingData['logo_url']) . '"' . $disabledAttr . ' /></td></tr>';
+        echo '<tr><th scope="row"><label for="wplg_primary_color">Primary Color</label></th><td><input type="color" id="wplg_primary_color" name="primary_color" value="' . esc_attr((string) $brandingData['primary_color']) . '"' . $disabledAttr . ' /></td></tr>';
+        echo '<tr><th scope="row"><label for="wplg_accent_color">Accent Color</label></th><td><input type="color" id="wplg_accent_color" name="accent_color" value="' . esc_attr((string) $brandingData['accent_color']) . '"' . $disabledAttr . ' /></td></tr>';
+        echo '<tr><th scope="row"><label for="wplg_footer_text">Footer Text</label></th><td><textarea class="large-text" rows="3" id="wplg_footer_text" name="footer_text"' . $disabledAttr . '>' . esc_textarea((string) $brandingData['footer_text']) . '</textarea></td></tr>';
 
         $checked = !empty($brandingData['hide_launchguard_branding']) ? 'checked' : '';
-        echo '<tr><th scope="row">White-label Mode</th><td><label><input type="checkbox" name="hide_launchguard_branding" value="1" ' . esc_attr($checked) . ' /> Hide LaunchGuard branding in exported reports</label></td></tr>';
+        echo '<tr><th scope="row">White-label Mode</th><td><label><input type="checkbox" name="hide_launchguard_branding" value="1" ' . esc_attr($checked) . $disabledAttr . ' /> Hide LaunchGuard branding in exported reports</label></td></tr>';
         echo '</table>';
 
-        submit_button('Save Branding');
+        if ($whitelabelEnabled) {
+            submit_button('Save Branding');
+        }
         echo '</form>';
         echo '</div>';
     }
@@ -643,6 +657,7 @@ class WPLG_Admin
         $currentPlanId = sanitize_text_field((string) ($billing['plan_id'] ?? 'starter'));
         $billingStatus = sanitize_text_field((string) ($billing['billing_status'] ?? 'trial'));
         $currentPeriodEnd = sanitize_text_field((string) ($billing['current_period_end'] ?? ''));
+        $currentPlan = is_array($data['current_plan'] ?? null) ? $data['current_plan'] : [];
 
         echo '<div class="wplg-card">';
         echo '<h2>Current Subscription</h2>';
@@ -651,6 +666,9 @@ class WPLG_Admin
         if ($currentPeriodEnd !== '') {
             echo '<p><strong>Current Period End:</strong> ' . esc_html($currentPeriodEnd) . '</p>';
         }
+        echo '<p><strong>Client PDF:</strong> ' . (!empty($currentPlan['pdf_export']) ? 'Included' : 'Not included') . '</p>';
+        echo '<p><strong>Evidence ZIP:</strong> ' . (!empty($currentPlan['zip_export']) ? 'Included' : 'Not included') . '</p>';
+        echo '<p><strong>White-label:</strong> ' . (!empty($currentPlan['whitelabel']) ? 'Included' : 'Not included') . '</p>';
         echo '</div>';
 
         if (empty($plans)) {
@@ -665,6 +683,8 @@ class WPLG_Admin
             $planScans = (int) ($plan['scans_limit'] ?? 0);
             $planSites = (int) ($plan['sites_limit'] ?? 0);
             $planWhitelabel = !empty($plan['whitelabel']);
+            $planPdf = !empty($plan['pdf_export']);
+            $planZip = !empty($plan['zip_export']);
             $stripeConfigured = !empty($plan['stripe_price_configured']);
             $isCurrent = $planId === $currentPlanId;
 
@@ -675,6 +695,8 @@ class WPLG_Admin
             }
             echo '<p><strong>Scans / month:</strong> ' . esc_html((string) $planScans) . '</p>';
             echo '<p><strong>Sites:</strong> ' . esc_html((string) $planSites) . '</p>';
+            echo '<p><strong>Client PDF:</strong> ' . esc_html($planPdf ? 'Included' : 'No') . '</p>';
+            echo '<p><strong>Evidence ZIP:</strong> ' . esc_html($planZip ? 'Included' : 'No') . '</p>';
             echo '<p><strong>White-label:</strong> ' . esc_html($planWhitelabel ? 'Included' : 'No') . '</p>';
 
             if (!$stripeConfigured) {
@@ -851,6 +873,12 @@ class WPLG_Admin
         $siteId = $this->get_option(self::OPTION_SITE_ID);
         if ($siteId === '') {
             $this->redirect_with_notice('wplaunchguard-branding', 'error', 'Connect the site before saving branding.');
+        }
+
+        $limits = $this->fetch_limits($siteId);
+        $planFeatures = $this->extract_plan_features($limits);
+        if (empty($planFeatures['whitelabel'])) {
+            $this->redirect_with_notice('wplaunchguard-branding', 'error', 'Upgrade to the Agency plan to unlock white-label branding.');
         }
 
         $payload = [
@@ -1415,6 +1443,8 @@ class WPLG_Admin
         $scanSummary = $this->extract_scan_summary($scan);
         $scanStatus = sanitize_key((string) ($scan['status'] ?? ''));
         $scanId = sanitize_text_field((string) ($scan['id'] ?? ''));
+        $reportPdfUrl = esc_url_raw((string) ($scanSummary['report_pdf_url'] ?? ''));
+        $reportZipUrl = esc_url_raw((string) ($scanSummary['report_share_zip_url'] ?? ''));
         echo '<ul class="wplg-kv-list">';
         echo '<li><span>ID</span><code>' . esc_html((string) ($scan['id'] ?? 'n/a')) . '</code></li>';
         echo '<li><span>Status</span>' . $this->render_status_pill((string) ($scan['status'] ?? 'n/a')) . '</li>';
@@ -1499,8 +1529,12 @@ class WPLG_Admin
             echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['workflow_url']) . '">Open GitHub Run</a>';
         }
 
-        if (!empty($scanSummary['reports_artifact_url'])) {
-            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['reports_artifact_url']) . '">Download Report ZIP</a>';
+        if ($reportPdfUrl !== '') {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url($reportPdfUrl) . '">Download PDF</a>';
+        }
+
+        if ($reportZipUrl !== '') {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url($reportZipUrl) . '">Download Evidence ZIP</a>';
         }
         if (in_array($scanStatus, ['failed', 'cancelled', 'protected_stopped', 'stalled'], true)) {
             echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="wplg-inline-form">';
@@ -2512,6 +2546,24 @@ class WPLG_Admin
     private function fetch_billing(string $siteId)
     {
         return $this->api_request('GET', '/v1/sites/' . rawurlencode($siteId) . '/billing');
+    }
+
+    private function extract_plan_features($response): array
+    {
+        if (is_wp_error($response)) {
+            return [
+                'pdf_export' => false,
+                'zip_export' => false,
+                'whitelabel' => false
+            ];
+        }
+
+        $data = is_array($response['data'] ?? null) ? $response['data'] : [];
+        return [
+            'pdf_export' => !empty($data['pdf_export']),
+            'zip_export' => !empty($data['zip_export']),
+            'whitelabel' => !empty($data['whitelabel'])
+        ];
     }
 
     private function fetch_scans(string $siteId, int $limit)

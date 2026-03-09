@@ -75,6 +75,7 @@ function buildArtifactPresence(clientName, reportDir) {
     site_summary_csv: fileExists('site_summary.csv', reportDir),
     url_summary_csv: fileExists('url_summary.csv', reportDir),
     qa_report_xlsx: fileExists('QA_Report.xlsx', reportDir),
+    qa_report_pdf: fileExists('QA_Report.pdf', reportDir),
     share_zip_latest: fileExists(latestZip, reportDir)
   };
 }

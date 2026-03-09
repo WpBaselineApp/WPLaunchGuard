@@ -52,6 +52,7 @@ const entries = [
   'site_summary.csv',
   'run_meta.json',
   'QA_Report.xlsx',
+  'QA_Report.pdf',
   'blocked_samples.json'
 ].filter((p) => fs.existsSync(path.join(reportsDir, p)));
 

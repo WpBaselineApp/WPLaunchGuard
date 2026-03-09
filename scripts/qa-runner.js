@@ -611,15 +611,35 @@ resolveUrlsPath()
       });
     }
 
-    // Always generate the shareable report zip so the UI export button works.
-    const zipScript = path.join(packageRoot, 'scripts', 'zip-report.js');
-    spawnSync('node', [zipScript, clientName], {
-      stdio: 'inherit',
-      env,
-      cwd
-    });
+    const zipExportEnabled = String(env.ZIP_EXPORT_ENABLED || 'true').toLowerCase() !== 'false';
+    const latestZipPath = path.join(reportsDir, `share-${clientName}-latest.zip`);
+    if (zipExportEnabled) {
+      const zipScript = path.join(packageRoot, 'scripts', 'zip-report.js');
+      spawnSync('node', [zipScript, clientName], {
+        stdio: 'inherit',
+        env,
+        cwd
+      });
+    } else if (fs.existsSync(latestZipPath)) {
+      fs.rmSync(latestZipPath, { force: true });
+    }
 
-    // Always generate the HTML report for the same client at the end of the run.
+    const pdfExportEnabled = String(env.PDF_EXPORT_ENABLED || '').toLowerCase() === 'true';
+    const pdfPath = path.join(reportsDir, 'QA_Report.pdf');
+    if (pdfExportEnabled) {
+      const pdfScript = path.join(packageRoot, 'reporting', 'generate-pdf-report.js');
+      const pdfResult = spawnSync('node', [pdfScript, clientName], {
+        stdio: 'inherit',
+        env,
+        cwd
+      });
+      if (pdfResult.status !== 0) {
+        console.warn('[qa-runner] PDF report generation failed; continuing without QA_Report.pdf.');
+      }
+    } else if (fs.existsSync(pdfPath)) {
+      fs.rmSync(pdfPath, { force: true });
+    }
+
     const htmlReportScript = path.join(packageRoot, 'reporting', 'generate-html-report.js');
     spawnSync('node', [htmlReportScript, clientName], {
       stdio: 'inherit',

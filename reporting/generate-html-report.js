@@ -501,6 +501,7 @@ async function generate(clientName) {
   const hasShareZip = fs.existsSync(shareZipPath);
   const hasResultsCsv = fs.existsSync(resultsPath);
   const hasExcelWorkbook = fs.existsSync(path.join(reportsDir, 'QA_Report.xlsx'));
+  const hasPdfReport = fs.existsSync(path.join(reportsDir, 'QA_Report.pdf'));
   const issuesPayload = loadJsonIfPresent(issuesJsonPath, { generatedAt: '', issues: [] });
   const rawResults = loadCsvIfPresent(resultsPath);
   const rawSummary = loadCsvIfPresent(summaryPath);
@@ -597,7 +598,8 @@ async function generate(clientName) {
     shareZip: hasShareZip ? `../${shareZipName}` : '',
     reportAssets: {
       csv: hasResultsCsv,
-      excel: hasExcelWorkbook
+      excel: hasExcelWorkbook,
+      pdf: hasPdfReport
     },
     runMeta,
     reportSettings: {
@@ -1395,7 +1397,8 @@ async function generate(clientName) {
             onclick="if (window.__wplgToggleAudience) { window.__wplgToggleAudience(); } return false;"
           >Switch to Developer View</button>
           <a id="exportCsvBtn" class="btn primary" href="../results.csv" download>Export CSV</a>
-          <a id="shareZipBtn" class="btn" href="#" download>Export Report</a>
+          <a id="openPdfBtn" class="btn primary" href="../QA_Report.pdf" target="_blank" rel="noopener">Export PDF</a>
+          <a id="shareZipBtn" class="btn" href="#" download>Export Evidence ZIP</a>
           <a id="openExcelBtn" class="btn" href="../QA_Report.xlsx" target="_blank" rel="noopener">Open Excel</a>
           <a id="lighthouseBtn" class="btn" href="#" target="_blank" rel="noopener">Lighthouse</a>
         </div>
@@ -1469,7 +1472,8 @@ async function generate(clientName) {
                   onclick="if (window.__wplgToggleAudience) { window.__wplgToggleAudience(); } return false;"
                 >Switch to Developer View</button>
                 <a id="exportCsvBtnSticky" class="btn primary" href="../results.csv" download>Export CSV</a>
-                <a id="shareZipBtnSticky" class="btn" href="#" download>Export Report</a>
+                <a id="openPdfBtnSticky" class="btn primary" href="../QA_Report.pdf" target="_blank" rel="noopener">Export PDF</a>
+                <a id="shareZipBtnSticky" class="btn" href="#" download>Export Evidence ZIP</a>
                 <a id="openExcelBtnSticky" class="btn" href="../QA_Report.xlsx" target="_blank" rel="noopener">Open Excel</a>
                 <a id="lighthouseBtnSticky" class="btn" href="#" target="_blank" rel="noopener">Lighthouse</a>
               </div>
@@ -1547,7 +1551,7 @@ async function generate(clientName) {
           fixPriority: { issueCount: 0, resolvedPercent: 0, issues: [] },
           changeSummary: { prevGeneratedAt: '', newCount: 0, resolvedCount: 0, newTop: [], resolvedTop: [] },
           shareZip: '',
-          reportAssets: { csv: true, excel: true },
+          reportAssets: { csv: true, excel: true, pdf: false },
           runMeta: { state: 'partial', run: {}, counts: {} },
           reportSettings: { defaultAudience: 'client' }
         };
@@ -3179,10 +3183,10 @@ async function generate(clientName) {
           const buttons = [document.getElementById('shareZipBtn'), document.getElementById('shareZipBtnSticky')].filter(Boolean);
           buttons.forEach(btn => {
             if (!href) {
-              disableAnchorButton(btn, 'Export Report (not available)');
+              disableAnchorButton(btn, 'Export Evidence ZIP (not available)');
               return;
             }
-            enableAnchorButton(btn, href, 'Export Report (zip)');
+            enableAnchorButton(btn, href, 'Export Evidence ZIP');
             btn.setAttribute('download', '');
           });
         }
@@ -3191,6 +3195,8 @@ async function generate(clientName) {
           const targets = [
             ['exportCsvBtn', '../results.csv', !!(data.reportAssets && data.reportAssets.csv), 'Export CSV'],
             ['exportCsvBtnSticky', '../results.csv', !!(data.reportAssets && data.reportAssets.csv), 'Export CSV'],
+            ['openPdfBtn', '../QA_Report.pdf', !!(data.reportAssets && data.reportAssets.pdf), 'Export PDF'],
+            ['openPdfBtnSticky', '../QA_Report.pdf', !!(data.reportAssets && data.reportAssets.pdf), 'Export PDF'],
             ['openExcelBtn', '../QA_Report.xlsx', !!(data.reportAssets && data.reportAssets.excel), 'Open Excel'],
             ['openExcelBtnSticky', '../QA_Report.xlsx', !!(data.reportAssets && data.reportAssets.excel), 'Open Excel']
           ];

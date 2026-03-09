@@ -33,6 +33,7 @@
     "qa": "node scripts/qa-runner.js",
     "qa:report": "node reporting/generate-dashboard.js",
     "qa:html": "node reporting/generate-html-report.js",
+    "qa:pdf": "node reporting/generate-pdf-report.js",
     "qa:share": "node scripts/zip-report.js",
     "visual:page": "node scripts/visual-page.js",
     "visual:baseline": "node scripts/visual-runner.js --mode=baseline",

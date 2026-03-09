@@ -26,6 +26,7 @@ In any folder (this is where `reports/` will be created):
 npx wplaunchguard init clientname --url=https://example.com/
 npx wplaunchguard run clientname --sitemap=https://example.com/sitemap_index.xml --quick
 npx wplaunchguard html clientname
+npx wplaunchguard pdf clientname
 npx wplaunchguard report clientname
 ```
 
@@ -61,6 +62,7 @@ wplaunchguard install-browsers
 - `reports/<clientname>/run_meta.json` - canonical run state/merge diagnostics (`complete`, `partial`, `interrupted`, `merge_failed`).
 - `reports/<clientname>/lighthouse/*.lighthouse.html` and `reports/<clientname>/lighthouse/*.lighthouse.json`.
 - `reports/<clientname>/QA_Report.xlsx` - Excel dashboard.
+- `reports/<clientname>/QA_Report.pdf` - client-safe PDF summary with sitewide Lighthouse averages.
 - `reports/<clientname>/screenshots/*.png` - failure evidence screenshots.
 - `reports/<clientname>/qa_html/index.html` - primary human-readable report (always generated, even on partial/interrupted runs).
   - Screenshot names include the issue slug: `<url-slug>-<browser>-<issue>.png`.

@@ -85,6 +85,7 @@ test('html report wires token-safe asset links and page-failures navigation', ()
   );
 
   fs.writeFileSync(path.join(reportsDir, 'QA_Report.xlsx'), 'placeholder', 'utf8');
+  fs.writeFileSync(path.join(reportsDir, 'QA_Report.pdf'), 'placeholder', 'utf8');
 
   const script = path.join(process.cwd(), 'reporting', 'generate-html-report.js');
   const run = spawnSync(process.execPath, [script, client], {
@@ -101,6 +102,8 @@ test('html report wires token-safe asset links and page-failures navigation', ()
   const html = fs.readFileSync(htmlPath, 'utf8');
   assert.ok(html.includes('id="exportCsvBtn"'));
   assert.ok(html.includes('id="exportCsvBtnSticky"'));
+  assert.ok(html.includes('id="openPdfBtn"'));
+  assert.ok(html.includes('id="openPdfBtnSticky"'));
   assert.ok(html.includes('id="openExcelBtn"'));
   assert.ok(html.includes('id="openExcelBtnSticky"'));
   assert.ok(html.includes('id="goToPageFailuresBtn"'));

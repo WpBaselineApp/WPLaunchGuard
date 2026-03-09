@@ -25,6 +25,29 @@ function getDefaultPlanId(env) {
   return String(env.DEFAULT_PLAN || 'starter').trim() || 'starter';
 }
 
+function getPlanFeatures(planId) {
+  const normalized = String(planId || '').trim().toLowerCase() || 'starter';
+  if (normalized === 'agency') {
+    return {
+      pdf_export: true,
+      zip_export: true,
+      whitelabel: true
+    };
+  }
+  if (normalized === 'growth') {
+    return {
+      pdf_export: true,
+      zip_export: true,
+      whitelabel: false
+    };
+  }
+  return {
+    pdf_export: true,
+    zip_export: false,
+    whitelabel: false
+  };
+}
+
 function getStripeConfig(env) {
   return {
     secretKey: String(env.STRIPE_SECRET_KEY || '').trim(),
@@ -785,7 +808,7 @@ function buildPlansPayload(env, plans) {
     id: plan.id,
     scans_limit: Number(plan.scans_limit || 0),
     sites_limit: Number(plan.sites_limit || 0),
-    whitelabel: Number(plan.whitelabel || 0),
+    ...getPlanFeatures(plan.id),
     stripe_price_configured: Boolean(getStripePriceIdForPlan(env, plan.id))
   }));
 }
@@ -1104,6 +1127,12 @@ async function getBranding(request, env, siteId) {
     return unauthorized();
   }
 
+  const site = await env.DB.prepare('SELECT tenant_id FROM sites WHERE id = ?').bind(siteId).first();
+  if (!site) return notFound();
+  const periodKey = nowIso().slice(0, 7);
+  const usageContext = await getTenantUsageContext(env, site.tenant_id, periodKey);
+  const planFeatures = getPlanFeatures(usageContext.billing?.plan_id || usageContext.plan?.id || getDefaultPlanId(env));
+
   const branding = await env.DB.prepare('SELECT * FROM site_branding WHERE site_id = ?').bind(siteId).first();
   if (!branding) {
     return json({
@@ -1116,16 +1145,26 @@ async function getBranding(request, env, siteId) {
         footer_text: '',
         hide_launchguard_branding: 0,
         updated_at: ''
-      }
+      },
+      features: planFeatures
     });
   }
-  return json({ branding });
+  return json({ branding, features: planFeatures });
 }
 
 async function upsertBranding(request, env, siteId) {
   const authorized = await authorizeSiteRequest(request, env, siteId);
   if (!authorized) {
     return unauthorized();
+  }
+
+  const site = await getSiteById(env, siteId);
+  if (!site) return notFound();
+  const periodKey = nowIso().slice(0, 7);
+  const usageContext = await getTenantUsageContext(env, site.tenant_id, periodKey);
+  const planFeatures = getPlanFeatures(usageContext.billing?.plan_id || usageContext.plan?.id || getDefaultPlanId(env));
+  if (!planFeatures.whitelabel) {
+    return json({ error: 'whitelabel_upgrade_required' }, 403);
   }
 
   const body = await parseJson(request);
@@ -1175,6 +1214,7 @@ async function getPlanLimits(request, env, siteId) {
 
   const periodKey = nowIso().slice(0, 7);
   const usageContext = await getTenantUsageContext(env, site.tenant_id, periodKey);
+  const planFeatures = getPlanFeatures(usageContext.billing?.plan_id || usageContext.plan?.id || getDefaultPlanId(env));
 
   return json({
     period_key: periodKey,
@@ -1183,7 +1223,9 @@ async function getPlanLimits(request, env, siteId) {
     sites_limit: Number(usageContext.plan?.sites_limit || 10),
     plan_id: String(usageContext.billing?.plan_id || getDefaultPlanId(env)),
     billing_status: String(usageContext.billing?.billing_status || 'trial'),
-    whitelabel: Number(usageContext.plan?.whitelabel || 0)
+    pdf_export: planFeatures.pdf_export ? 1 : 0,
+    zip_export: planFeatures.zip_export ? 1 : 0,
+    whitelabel: planFeatures.whitelabel ? 1 : 0
   });
 }
 
@@ -1321,6 +1363,7 @@ async function getBillingOverview(request, env, siteId) {
   const billing = await ensureTenantBillingRow(env, site.tenant_id);
   const plans = buildPlansPayload(env, await getAllPlans(env));
   const currentPlan = (await getPlanById(env, String(billing?.plan_id || getDefaultPlanId(env)))) || null;
+  const currentPlanFeatures = getPlanFeatures(currentPlan?.id || billing?.plan_id || getDefaultPlanId(env));
 
   return json({
     billing: {
@@ -1336,7 +1379,9 @@ async function getBillingOverview(request, env, siteId) {
           id: currentPlan.id,
           scans_limit: Number(currentPlan.scans_limit || 0),
           sites_limit: Number(currentPlan.sites_limit || 0),
-          whitelabel: Number(currentPlan.whitelabel || 0)
+          pdf_export: currentPlanFeatures.pdf_export ? 1 : 0,
+          zip_export: currentPlanFeatures.zip_export ? 1 : 0,
+          whitelabel: currentPlanFeatures.whitelabel ? 1 : 0
         }
       : null,
     plans
@@ -1550,6 +1595,13 @@ function buildScanReportIndexUrl(env, scanId, token) {
   return `${base}/v1/reports/${encodeURIComponent(scanId)}/qa_html/index.html?t=${encodeURIComponent(token)}`;
 }
 
+function buildScanReportAssetUrl(env, scanId, token, assetPath) {
+  const base = getPublicApiBase(env);
+  const normalizedAssetPath = normalizeReportAssetPath(assetPath);
+  if (!base || !scanId || !token || !normalizedAssetPath) return '';
+  return `${base}/v1/reports/${encodeURIComponent(scanId)}/${normalizedAssetPath}?t=${encodeURIComponent(token)}`;
+}
+
 function normalizeReportAssetPath(rawPath) {
   const decoded = decodeURIComponent(String(rawPath || '').trim());
   const parts = decoded
@@ -1591,6 +1643,8 @@ function contentTypeForReportAsset(assetPath) {
   if (value.endsWith('.csv')) return 'text/csv; charset=utf-8';
   if (value.endsWith('.tsv')) return 'text/tab-separated-values; charset=utf-8';
   if (value.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (value.endsWith('.pdf')) return 'application/pdf';
+  if (value.endsWith('.zip')) return 'application/zip';
   if (value.endsWith('.png')) return 'image/png';
   if (value.endsWith('.jpg') || value.endsWith('.jpeg')) return 'image/jpeg';
   if (value.endsWith('.webp')) return 'image/webp';
@@ -1717,12 +1771,32 @@ async function reconcileReportPublishingState(env, scanId, summaryRaw, status) {
 
   if (readiness.ready) {
     summary.report_index_url = buildScanReportIndexUrl(env, scanId, reportToken);
+    summary.report_pdf_url = '';
+    summary.report_excel_url = '';
+    summary.report_share_zip_url = '';
+    const optionalAssets = [
+      ['report_pdf_url', 'QA_Report.pdf'],
+      ['report_excel_url', 'QA_Report.xlsx']
+    ];
+    const clientName = String(summary.client_name || summary.client || '').trim();
+    if (clientName) {
+      optionalAssets.push(['report_share_zip_url', `share-${clientName}-latest.zip`]);
+    }
+    for (const [field, relativePath] of optionalAssets) {
+      const key = `${prefix}/${relativePath}`;
+      if (await reportObjectExists(env, key)) {
+        summary[field] = buildScanReportAssetUrl(env, scanId, reportToken, relativePath);
+      }
+    }
     summary.report_publishing = false;
     delete summary.report_pending_missing;
     return summary;
   }
 
   summary.report_index_url = '';
+  summary.report_pdf_url = '';
+  summary.report_excel_url = '';
+  summary.report_share_zip_url = '';
   summary.report_publishing = true;
   summary.report_pending_missing = readiness.missing;
   return summary;
@@ -1881,6 +1955,9 @@ async function dispatchScanToGitHub(env, scan, site) {
   const tenant = await getTenantById(env, site.tenant_id);
   const clientName = deriveClientSlugFromSite(site);
   const clientLabel = deriveClientLabel(site, tenant?.name || '');
+  const periodKey = nowIso().slice(0, 7);
+  const usageContext = await getTenantUsageContext(env, site.tenant_id, periodKey);
+  const planFeatures = getPlanFeatures(usageContext.billing?.plan_id || usageContext.plan?.id || getDefaultPlanId(env));
 
   const payload = {
     ref: config.ref,
@@ -1900,6 +1977,8 @@ async function dispatchScanToGitHub(env, scan, site) {
       quick_scan_enabled: formatWorkflowBooleanInput(scanOptions.quick_scan_enabled),
       responsive_enabled: formatWorkflowBooleanInput(scanOptions.responsive_enabled),
       viewport_preset: normalizeViewportPreset(scanOptions.viewport_preset, 'desktop'),
+      pdf_export_enabled: formatWorkflowBooleanInput(planFeatures.pdf_export),
+      zip_export_enabled: formatWorkflowBooleanInput(planFeatures.zip_export),
       callback_url: callbackUrl
     }
   };
