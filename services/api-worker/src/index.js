@@ -1977,8 +1977,14 @@ async function getScanReportAsset(request, env, scanId, assetPath, url) {
 
 async function dispatchScanToGitHub(env, scan, site) {
   const config = getGitHubDispatchConfig(env);
-  if (!config.owner || !config.repo || !config.workflow || !config.ref || !config.token) {
-    throw new Error('missing_github_dispatch_config');
+  const missingConfig = [];
+  if (!config.owner) missingConfig.push('GITHUB_OWNER');
+  if (!config.repo) missingConfig.push('GITHUB_REPO');
+  if (!config.workflow) missingConfig.push('GITHUB_WORKFLOW_FILE');
+  if (!config.ref) missingConfig.push('GITHUB_REF');
+  if (!config.token) missingConfig.push('GITHUB_DISPATCH_TOKEN_OR_GITHUB_TOKEN');
+  if (missingConfig.length > 0) {
+    throw new Error(`missing_github_dispatch_config:${missingConfig.join(',')}`);
   }
 
   const callbackPath = '/v1/internal/scan-callback';
