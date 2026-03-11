@@ -1950,7 +1950,7 @@ class Baseline_Admin
               if (status === 'dispatched' || status === 'running') {
                 return {
                   key: 'running',
-                  message: 'Scan is running in the cloud with strict safety guardrails enabled.'
+                  message: 'Scan is running in the cloud. GitHub QA execution can take 5 to 20 minutes on larger sites.'
                 };
               }
               if (status === 'stalled') {
@@ -2258,7 +2258,8 @@ class Baseline_Admin
                 var progress = clampNumber(payload.progress_percent, 0, 100);
 
                 if (isRunningStatus(status)) {
-                  if (progress <= state.lastProgress && state.lastProgress < 99) {
+                  var syntheticCap = status === 'dispatched' ? 85 : 95;
+                  if (progress <= state.lastProgress && state.lastProgress < syntheticCap) {
                     progress = state.lastProgress + 1;
                   }
                   state.lastProgress = Math.max(state.lastProgress, progress);
@@ -2478,7 +2479,8 @@ class Baseline_Admin
                   var status = normalizeStatus(payload.status || payload.status_label || 'queued');
                   var progress = clampNumber(payload.progress_percent, 0, 100);
                   if (isRunningStatus(status)) {
-                    if (progress <= state.lastProgress && state.lastProgress < 99) {
+                    var syntheticCap = status === 'dispatched' ? 85 : 95;
+                    if (progress <= state.lastProgress && state.lastProgress < syntheticCap) {
                       progress = state.lastProgress + 1;
                     }
                     state.lastProgress = Math.max(state.lastProgress, progress);
