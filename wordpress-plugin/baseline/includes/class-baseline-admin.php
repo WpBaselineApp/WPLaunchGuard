@@ -1165,6 +1165,7 @@ class Baseline_Admin
         $reportUrl = esc_url_raw((string) ($summary['report_index_url'] ?? ''));
         $workflowUrl = esc_url_raw((string) ($summary['workflow_url'] ?? ''));
         $artifactUrl = esc_url_raw((string) ($summary['reports_artifact_url'] ?? ''));
+        $failureInfo = $this->extract_scan_failure_info($summary);
 
         return [
             'scan_id' => sanitize_text_field((string) ($scanRow['id'] ?? '')),
@@ -1184,7 +1185,51 @@ class Baseline_Admin
             'artifact_url' => $artifactUrl,
             'report_publishing' => $status === 'completed' && $reportUrl === '',
             'progress' => $progressSnapshot,
-            'safety' => $safetyPayload
+            'safety' => $safetyPayload,
+            'error_code' => $failureInfo['code'],
+            'error_message' => $failureInfo['message']
+        ];
+    }
+
+    private function extract_scan_failure_info(array $summary): array
+    {
+        $rawCodeCandidates = [
+            $summary['dispatch_error'] ?? '',
+            $summary['error_code'] ?? '',
+            $summary['failure_code'] ?? '',
+            $summary['reason_code'] ?? '',
+            (is_array($summary['safety'] ?? null) ? ($summary['safety']['reason_code'] ?? '') : '')
+        ];
+
+        $code = '';
+        foreach ($rawCodeCandidates as $candidate) {
+            $value = sanitize_key((string) $candidate);
+            if ($value !== '') {
+                $code = $value;
+                break;
+            }
+        }
+
+        $rawMessageCandidates = [
+            $summary['error_message'] ?? '',
+            $summary['failure_reason'] ?? '',
+            $summary['error'] ?? '',
+            $summary['dispatch_error_message'] ?? '',
+            (is_array($summary['safety'] ?? null) ? ($summary['safety']['reason_detail'] ?? '') : '')
+        ];
+
+        $message = '';
+        foreach ($rawMessageCandidates as $candidate) {
+            $value = sanitize_text_field((string) $candidate);
+            if ($value !== '') {
+                $message = $value;
+                break;
+            }
+        }
+
+        return [
+            'code' => $code,
+            'message' => $message
         ];
     }
 
@@ -1512,6 +1557,15 @@ class Baseline_Admin
 
         if (!empty($scanSummary['run_state'])) {
             echo '<p><strong>Run State:</strong> ' . esc_html((string) $scanSummary['run_state']) . '</p>';
+        }
+        $failureInfo = $this->extract_scan_failure_info($scanSummary);
+        if (in_array($scanStatus, ['failed', 'cancelled', 'protected_stopped', 'stalled'], true)) {
+            if ($failureInfo['code'] !== '') {
+                echo '<p><strong>Error Code:</strong> <code>' . esc_html($failureInfo['code']) . '</code></p>';
+            }
+            if ($failureInfo['message'] !== '') {
+                echo '<p><strong>Error Detail:</strong> ' . esc_html($failureInfo['message']) . '</p>';
+            }
         }
         if ($scanStatus === 'stalled') {
             echo '<p class="description">Scan stalled due to missing progress telemetry. Retry with safe profile.</p>';
@@ -1864,8 +1918,10 @@ class Baseline_Admin
               var hasWorkflow = String(payload.workflow_url || '').trim() !== '';
               var hasReport = String(payload.report_url || '').trim() !== '';
               var hasArtifact = String(payload.artifact_url || '').trim() !== '';
+              var errorCode = String(payload.error_code || '').trim();
               var safety = payload.safety && typeof payload.safety === 'object' ? payload.safety : {};
               var safetyDetail = String(safety.reason_detail || '').trim();
+              var errorSuffix = errorCode ? ' (Error code: ' + errorCode + ')' : '';
 
               if (status === 'queued' || status === 'queued_local') {
                 return {
@@ -1882,7 +1938,7 @@ class Baseline_Admin
               if (status === 'stalled') {
                 return {
                   key: 'stalled',
-                  message: safetyDetail || 'Scan stalled due to missing progress updates. Retry with a safe profile.',
+                  message: (safetyDetail || 'Scan stalled due to missing progress updates. Retry with a safe profile.') + errorSuffix,
                   primary: 'retry_safe',
                   secondary: hasWorkflow ? 'open_workflow' : null
                 };
@@ -1890,7 +1946,7 @@ class Baseline_Admin
               if (status === 'protected_stopped') {
                 return {
                   key: 'protected_stopped',
-                  message: safetyDetail || 'Site under stress; scan auto-stopped to protect uptime.',
+                  message: (safetyDetail || 'Site under stress; scan auto-stopped to protect uptime.') + errorSuffix,
                   primary: 'retry_safe',
                   secondary: hasWorkflow ? 'open_workflow' : null
                 };
@@ -1898,14 +1954,14 @@ class Baseline_Admin
               if (status === 'failed' && !hasWorkflow) {
                 return {
                   key: 'dispatch_failed',
-                  message: 'Scan dispatch failed before workflow start. Retry in safe mode.',
+                  message: 'Scan dispatch failed before workflow start. Retry in safe mode.' + errorSuffix,
                   primary: 'retry_safe'
                 };
               }
               if (status === 'failed') {
                 return {
                   key: 'failed',
-                  message: 'Scan failed. Open the GitHub run for details and retry with safe scan.',
+                  message: 'Scan failed. Open the GitHub run for details and retry with safe scan.' + errorSuffix,
                   primary: hasWorkflow ? 'open_workflow' : 'retry_safe',
                   secondary: 'retry_safe'
                 };
