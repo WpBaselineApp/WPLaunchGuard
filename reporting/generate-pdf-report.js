@@ -59,6 +59,19 @@ function safeHtml(value) {
     .replace(/'/g, '&#039;');
 }
 
+function toBool(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value === 1;
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on';
+}
+
+function sanitizeHexColor(value, fallback) {
+  const candidate = String(value || '').trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(candidate)) return candidate;
+  return fallback;
+}
+
 function toScore(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -193,6 +206,27 @@ function buildPdfReportModel(clientName, results, summaryRows, runMeta, clientLa
   };
 }
 
+function buildPdfBranding() {
+  const brandName = String(process.env.REPORT_BRAND_NAME || '').trim();
+  const brandLogoUrl = String(process.env.REPORT_BRAND_LOGO_URL || '').trim();
+  const brandPrimaryColor = sanitizeHexColor(process.env.REPORT_BRAND_PRIMARY_COLOR, '#2f86c3');
+  const brandAccentColor = sanitizeHexColor(process.env.REPORT_BRAND_ACCENT_COLOR, '#34b3a0');
+  const brandFooterText = String(process.env.REPORT_BRAND_FOOTER_TEXT || '').trim();
+  const hideBaselineBranding = toBool(process.env.REPORT_HIDE_BASELINE_BRANDING);
+  const useCustomBrand = hideBaselineBranding && brandName.length > 0;
+  const reportDisplayName = useCustomBrand ? brandName : 'Baseline';
+  const reportLogoText = useCustomBrand ? String(brandName[0] || 'B').toUpperCase() : 'B';
+
+  return {
+    reportDisplayName,
+    reportLogoText,
+    logoUrl: useCustomBrand ? brandLogoUrl : '',
+    primaryColor: brandPrimaryColor,
+    accentColor: brandAccentColor,
+    footerText: brandFooterText
+  };
+}
+
 function scoreMarkup(label, value, count) {
   const displayValue = value === null ? 'n/a' : `${value}`;
   const displayCount = count > 0 ? `${count} pages` : 'no Lighthouse data';
@@ -213,6 +247,10 @@ function tableRows(rows, renderRow) {
 }
 
 function renderPdfHtml(model) {
+  const brand = model.branding || buildPdfBranding();
+  const logoMarkup = brand.logoUrl
+    ? `<img class="brandLogoImage" src="${safeHtml(brand.logoUrl)}" alt="${safeHtml(brand.reportDisplayName)} logo" />`
+    : `<div class="brandLogoText">${safeHtml(brand.reportLogoText)}</div>`;
   const averages = model.lighthouseAverages;
   return `<!doctype html>
 <html lang="en">
@@ -220,11 +258,19 @@ function renderPdfHtml(model) {
   <meta charset="utf-8">
   <title>${safeHtml(model.clientLabel)} PDF Report</title>
   <style>
+    :root {
+      --brand-primary: ${safeHtml(brand.primaryColor)};
+      --brand-accent: ${safeHtml(brand.accentColor)};
+    }
     @page { margin: 18mm 14mm; }
     body { font-family: Arial, sans-serif; color: #172033; margin: 0; }
     h1, h2, h3, p { margin: 0; }
     .page { width: 100%; }
     .hero { border-bottom: 2px solid #d7e0ea; padding-bottom: 14px; margin-bottom: 18px; }
+    .brandBar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+    .brandLogoImage { width: 36px; height: 36px; border-radius: 8px; object-fit: contain; border: 1px solid #d7e0ea; background: #fff; padding: 4px; }
+    .brandLogoText { width: 36px; height: 36px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: var(--brand-primary); color: #fff; font-size: 16px; font-weight: 700; }
+    .brandName { font-size: 16px; font-weight: 700; color: #172033; }
     .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #4b6478; margin-bottom: 8px; }
     .title { font-size: 26px; font-weight: 700; margin-bottom: 8px; }
     .meta { font-size: 12px; color: #4b6478; }
@@ -233,7 +279,7 @@ function renderPdfHtml(model) {
     .summaryLabel, .scoreLabel { font-size: 11px; text-transform: uppercase; color: #4b6478; margin-bottom: 6px; }
     .summaryValue, .scoreValue { font-size: 22px; font-weight: 700; color: #172033; }
     .section { margin-top: 18px; }
-    .sectionTitle { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
+    .sectionTitle { font-size: 16px; font-weight: 700; margin-bottom: 10px; color: var(--brand-primary); }
     .scoreGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
     .scoreMeta { font-size: 11px; color: #4b6478; margin-top: 4px; }
     .note { font-size: 11px; color: #4b6478; margin-top: 8px; }
@@ -241,13 +287,17 @@ function renderPdfHtml(model) {
     th, td { border-bottom: 1px solid #d7e0ea; padding: 8px 6px; text-align: left; vertical-align: top; }
     th { text-transform: uppercase; font-size: 10px; color: #4b6478; letter-spacing: 0.05em; }
     .empty { color: #4b6478; text-align: center; padding: 18px 6px; }
-    .footer { margin-top: 18px; font-size: 10px; color: #4b6478; }
+    .footer { margin-top: 18px; font-size: 10px; color: #4b6478; border-top: 1px solid #d7e0ea; padding-top: 8px; }
   </style>
 </head>
 <body>
   <div class="page">
     <div class="hero">
-      <div class="eyebrow">WordPress QA Summary PDF</div>
+      <div class="brandBar">
+        ${logoMarkup}
+        <div class="brandName">${safeHtml(brand.reportDisplayName)}</div>
+      </div>
+      <div class="eyebrow">${safeHtml(brand.reportDisplayName)} WordPress QA Summary PDF</div>
       <div class="title">${safeHtml(model.clientLabel)}</div>
       <div class="meta">Generated ${safeHtml(model.generatedAt)} • Run state: ${safeHtml(model.runState)}</div>
     </div>
@@ -320,7 +370,7 @@ function renderPdfHtml(model) {
       </table>
     </div>
 
-    <div class="footer">This PDF is a client-safe summary. Use the HTML report for interactive evidence and detailed diagnostics.</div>
+    <div class="footer">${safeHtml(brand.footerText || 'This PDF is a client-safe summary. Use the HTML report for interactive evidence and detailed diagnostics.')}</div>
   </div>
 </body>
 </html>`;
@@ -353,6 +403,7 @@ async function generatePdfReport(clientName) {
     runMeta,
     String(process.env.REPORT_CLIENT_LABEL || '').trim()
   );
+  model.branding = buildPdfBranding();
   const html = renderPdfHtml(model);
 
   let browser;
@@ -400,6 +451,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  buildPdfBranding,
   buildPdfReportModel,
   generatePdfReport,
   parseCSV,
