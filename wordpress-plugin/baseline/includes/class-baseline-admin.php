@@ -377,7 +377,7 @@ class Baseline_Admin
         $summary = $this->extract_scan_summary($scan);
         $scanId = sanitize_text_field((string) ($scan['id'] ?? ''));
         $progress = $this->estimate_scan_progress($status, $summary);
-        $currentUrl = $this->extract_current_scan_url($summary, $scan);
+        $currentUrl = $this->extract_current_scan_url($summary, $scan, $status);
         $scanUrl = add_query_arg(
             [
                 'page' => 'baseline-scan',
@@ -1132,9 +1132,11 @@ class Baseline_Admin
         ];
     }
 
-    private function extract_current_scan_url(array $summary, array $scanRow): string
+    private function extract_current_scan_url(array $summary, array $scanRow, string $status = ''): string
     {
         $progress = isset($summary['progress']) && is_array($summary['progress']) ? $summary['progress'] : [];
+        $statusNormalized = sanitize_key($status);
+        $isActiveScan = in_array($statusNormalized, ['queued', 'queued_local', 'dispatched', 'running'], true);
         $sampleUrl = '';
         if (isset($summary['issues_sample']) && is_array($summary['issues_sample']) && !empty($summary['issues_sample'][0]['url'])) {
             $sampleUrl = (string) $summary['issues_sample'][0]['url'];
@@ -1147,10 +1149,13 @@ class Baseline_Admin
             $summary['last_completed_url'] ?? '',
             $scanRow['target_url'] ?? '',
             $summary['target_url'] ?? '',
-            $summary['dispatch']['target_url'] ?? '',
-            $summary['dispatch']['site_url'] ?? '',
-            $sampleUrl
+            $summary['dispatch']['target_url'] ?? ''
         ];
+
+        if (!$isActiveScan) {
+            $candidates[] = $summary['dispatch']['site_url'] ?? '';
+            $candidates[] = $sampleUrl;
+        }
 
         foreach ($candidates as $candidate) {
             $value = esc_url_raw((string) $candidate);
@@ -1168,7 +1173,7 @@ class Baseline_Admin
         $status = sanitize_key((string) ($scanRow['status'] ?? 'unknown'));
         $progressSnapshot = $this->extract_progress_snapshot($summary);
         $progressPercent = $this->estimate_scan_progress($status, $summary);
-        $currentUrl = $this->extract_current_scan_url($summary, $scanRow);
+        $currentUrl = $this->extract_current_scan_url($summary, $scanRow, $status);
         $targetUrl = esc_url_raw((string) ($scanRow['target_url'] ?? ($summary['target_url'] ?? ($summary['dispatch']['target_url'] ?? ($summary['dispatch']['site_url'] ?? '')))));
         $issuesTotal = $this->extract_issues_total($summary);
         $safety = isset($summary['safety']) && is_array($summary['safety']) ? $summary['safety'] : [];
@@ -1181,7 +1186,7 @@ class Baseline_Admin
             'triggered_at' => sanitize_text_field((string) ($safety['triggered_at'] ?? ''))
         ];
         $reportUrl = esc_url_raw((string) ($summary['report_index_url'] ?? ''));
-        $workflowUrl = esc_url_raw((string) ($summary['workflow_url'] ?? ''));
+        $workflowUrl = esc_url_raw((string) ($summary['workflow_url'] ?? ($summary['dispatch']['workflow_url'] ?? '')));
         $artifactUrl = esc_url_raw((string) ($summary['reports_artifact_url'] ?? ''));
         $failureInfo = $this->extract_scan_failure_info($summary);
 
@@ -1400,7 +1405,7 @@ class Baseline_Admin
         $summary = $this->extract_scan_summary($scan);
         $status = sanitize_key((string) ($scan['status'] ?? 'unknown'));
         $progress = $this->estimate_scan_progress($status, $summary);
-        $currentUrl = $this->extract_current_scan_url($summary, $scan);
+        $currentUrl = $this->extract_current_scan_url($summary, $scan, $status);
         $message = $this->get_scan_eta_text($status);
         $pollUrl = admin_url('admin-ajax.php');
         $pollNonce = wp_create_nonce('baseline_poll_scan');
@@ -1429,8 +1434,9 @@ class Baseline_Admin
         } else {
             echo '<a class="button button-primary is-disabled" data-baseline-inline-view-report="1" aria-disabled="true" href="#">View Report</a>';
         }
-        if (!empty($summary['workflow_url'])) {
-            echo '<a class="button" data-baseline-inline-open-run="1" target="_blank" rel="noopener" href="' . esc_url((string) $summary['workflow_url']) . '">Open GitHub Run</a>';
+        $workflowUrl = (string) ($summary['workflow_url'] ?? ($summary['dispatch']['workflow_url'] ?? ''));
+        if (!empty($workflowUrl)) {
+            echo '<a class="button" data-baseline-inline-open-run="1" target="_blank" rel="noopener" href="' . esc_url($workflowUrl) . '">Open GitHub Run</a>';
         } else {
             echo '<a class="button is-disabled" data-baseline-inline-open-run="1" aria-disabled="true" href="#">Open GitHub Run</a>';
         }
@@ -1538,7 +1544,7 @@ class Baseline_Admin
         echo '<span style="width:' . esc_attr((string) $progressPercent) . '%"></span>';
         echo '</div>';
 
-        $currentUrl = $this->extract_current_scan_url($scanSummary, $scan);
+        $currentUrl = $this->extract_current_scan_url($scanSummary, $scan, $scanStatus);
         if ($currentUrl !== '') {
             echo '<p><strong>Current URL:</strong> <code class="baseline-break-word">' . esc_html($currentUrl) . '</code></p>';
         }
@@ -1604,8 +1610,9 @@ class Baseline_Admin
             echo '<a class="button button-primary" href="' . esc_url(add_query_arg(['page' => 'baseline-scan'], admin_url('admin.php'))) . '">Retry Report Link</a>';
         }
 
-        if (!empty($scanSummary['workflow_url'])) {
-            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url((string) $scanSummary['workflow_url']) . '">Open GitHub Run</a>';
+        $workflowUrl = (string) ($scanSummary['workflow_url'] ?? ($scanSummary['dispatch']['workflow_url'] ?? ''));
+        if (!empty($workflowUrl)) {
+            echo '<a class="button" target="_blank" rel="noopener" href="' . esc_url($workflowUrl) . '">Open GitHub Run</a>';
         }
 
         if ($reportPdfUrl !== '') {
@@ -1663,7 +1670,7 @@ class Baseline_Admin
         foreach ($rows as $row) {
             $rowSummary = $this->extract_scan_summary($row);
             $rowIssues = $this->extract_issues_total($rowSummary);
-            $reportUrl = (string) ($rowSummary['report_index_url'] ?? ($rowSummary['workflow_url'] ?? ($rowSummary['reports_artifact_url'] ?? '')));
+            $reportUrl = (string) ($rowSummary['report_index_url'] ?? ($rowSummary['workflow_url'] ?? ($rowSummary['dispatch']['workflow_url'] ?? ($rowSummary['reports_artifact_url'] ?? ''))));
             echo '<tr>';
             echo '<td>' . esc_html((string) ($row['id'] ?? '')) . '</td>';
             echo '<td>' . $this->render_status_pill((string) ($row['status'] ?? '')) . '</td>';

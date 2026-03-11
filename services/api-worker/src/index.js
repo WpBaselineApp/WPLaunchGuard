@@ -2176,11 +2176,19 @@ async function queueConsumer(batch, env) {
       const dispatchMeta = await dispatchScanToGitHub(env, scan, site);
       const merged = mergeSummary(scan.summary_json, {
         dispatch: dispatchMeta,
-        queue_message_id: String(message.id || '')
+        queue_message_id: String(message.id || ''),
+        run_state: 'running',
+        progress_percent: 5,
+        progress: {
+          phase: 'workflow_queued',
+          percent: 5,
+          current_url: String(dispatchMeta.target_url || ''),
+          last_update_at: nowIso()
+        }
       });
 
       await env.DB.prepare('UPDATE scans SET status = ?, updated_at = ?, summary_json = ? WHERE id = ?')
-        .bind('dispatched', nowIso(), JSON.stringify(merged), scanId)
+        .bind('running', nowIso(), JSON.stringify(merged), scanId)
         .run();
     } catch (error) {
       const merged = mergeSummary(scan.summary_json, {
