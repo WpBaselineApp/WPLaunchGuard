@@ -6,6 +6,7 @@ if (!defined('ABSPATH')) {
 
 class Baseline_Admin
 {
+    private const DEFAULT_API_BASE = 'https://baseline-api.simonrankine4.workers.dev';
     private const OPTION_API_BASE = 'baseline_api_base_url';
     private const OPTION_SITE_TOKEN = 'baseline_site_token';
     private const OPTION_SITE_ID = 'baseline_site_id';
@@ -99,7 +100,7 @@ class Baseline_Admin
         register_setting('baseline_settings_group', self::OPTION_API_BASE, [
             'type' => 'string',
             'sanitize_callback' => 'esc_url_raw',
-            'default' => ''
+            'default' => self::DEFAULT_API_BASE
         ]);
 
         register_setting('baseline_settings_group', self::OPTION_SITE_TOKEN, [
@@ -601,7 +602,7 @@ class Baseline_Admin
                 <table class="form-table" role="presentation">
                     <tr>
                         <th scope="row"><label for="baseline_api_base_url">API Base URL</label></th>
-                        <td><input class="regular-text" type="url" id="baseline_api_base_url" name="baseline_api_base_url" value="<?php echo esc_attr($this->get_option(self::OPTION_API_BASE)); ?>" placeholder="https://baseline-api.your-subdomain.workers.dev" /></td>
+                        <td><input class="regular-text" type="url" id="baseline_api_base_url" name="baseline_api_base_url" value="<?php echo esc_attr($this->get_option(self::OPTION_API_BASE, self::DEFAULT_API_BASE)); ?>" placeholder="https://baseline-api.your-subdomain.workers.dev" /></td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="baseline_site_token">Site Token</label></th>
@@ -1063,7 +1064,11 @@ class Baseline_Admin
 
     private function get_api_base(): string
     {
-        return untrailingslashit($this->get_option(self::OPTION_API_BASE));
+        $configured = trim($this->get_option(self::OPTION_API_BASE, self::DEFAULT_API_BASE));
+        if ($configured === '') {
+            $configured = self::DEFAULT_API_BASE;
+        }
+        return untrailingslashit($configured);
     }
 
     private function get_option(string $key, string $default = ''): string

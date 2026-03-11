@@ -46,6 +46,7 @@ const cwd = process.cwd();
 const dataPath = resolveClientDataFile(cwd, clientName);
 const fallbackPath = path.join(cwd, 'data', 'urls.json');
 const allowGlobalFallback = String(process.env.QA_ALLOW_GLOBAL_URL_FALLBACK || '').toLowerCase() === 'true';
+const allowClientDataFallback = String(process.env.QA_ALLOW_CLIENT_DATA_FALLBACK || '').toLowerCase() === 'true';
 const relativeDataPath = path.relative(cwd, dataPath);
 let clientConfig = {};
 if (fs.existsSync(dataPath)) {
@@ -221,7 +222,24 @@ function shouldIncludeContentUrl(urlValue) {
 async function fetchRestUrls(restBase) {
   const apiBase = restBase.replace(/\/+$/, '');
   const origin = new URL(apiBase).origin;
-  const collections = ['pages', 'posts'];
+  const defaultCollections = ['pages', 'posts'];
+  const collections = new Set(defaultCollections);
+
+  try {
+    const types = await fetchJson(`${apiBase}/wp-json/wp/v2/types`);
+    if (types && typeof types === 'object') {
+      for (const typeRecord of Object.values(types)) {
+        if (!typeRecord || typeof typeRecord !== 'object') continue;
+        const restBaseName = String(typeRecord.rest_base || '').trim();
+        const isPublic = Boolean(typeRecord.public);
+        if (!isPublic || !restBaseName) continue;
+        if (['attachments', 'revisions', 'nav_menu_item'].includes(restBaseName)) continue;
+        collections.add(restBaseName);
+      }
+    }
+  } catch {
+    // Keep defaults when type introspection is blocked.
+  }
 
   const urls = [];
   const seen = new Set();
@@ -368,7 +386,7 @@ async function resolveUrlsPath() {
       if (sampleTemplates) {
         uniqueUrls.splice(0, uniqueUrls.length, ...reduceTemplateUrls(uniqueUrls));
       }
-      const limitValue = sitemapLimitFlag ? Number(sitemapLimitFlag.replace('--sitemap-limit=', '')) : 200;
+      const limitValue = sitemapLimitFlag ? Number(sitemapLimitFlag.replace('--sitemap-limit=', '')) : 500;
       const limited = applySitemapLimit(uniqueUrls, limitValue);
       const nonHomeUrls = uniqueUrls.filter((url) => {
         try {
@@ -388,8 +406,11 @@ async function resolveUrlsPath() {
 
   // No implicit sitemap fallback: avoid hidden/private/non-front-facing URLs.
 
-  if (fs.existsSync(dataPath)) {
-    console.warn(`[qa-runner] URL source fallback: client data file ${relativeDataPath}.`);
+  if (allowClientDataFallback && fs.existsSync(dataPath)) {
+    console.warn(
+      `[qa-runner] URL source fallback: client data file ${relativeDataPath}. ` +
+      `Set QA_ALLOW_CLIENT_DATA_FALLBACK=false to disable this behavior.`
+    );
     return dataPath;
   }
 
@@ -403,7 +424,7 @@ async function resolveUrlsPath() {
 
   throw new Error(
     `No URL source found for client "${clientName}". ` +
-      `Expected ${relativeDataPath} or pass --sitemap=https://example.com/sitemap_index.xml.`
+      `Pass --sitemap=https://example.com/sitemap_index.xml or set QA_ALLOW_CLIENT_DATA_FALLBACK=true to use ${relativeDataPath}.`
   );
 }
 

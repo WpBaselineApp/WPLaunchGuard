@@ -120,6 +120,12 @@ function timingSafeEqual(left, right) {
   return mismatch === 0;
 }
 
+async function sha256Hex(value) {
+  const input = new TextEncoder().encode(String(value || ''));
+  const digest = await crypto.subtle.digest('SHA-256', input);
+  return byteArrayToHex(new Uint8Array(digest));
+}
+
 async function signStripePayload(secret, payload) {
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -619,8 +625,8 @@ function enrichScanRow(row) {
 
 function getPlanDefaults() {
   return [
-    { id: 'starter', scans_limit: 30, sites_limit: 10, whitelabel: 1 },
-    { id: 'growth', scans_limit: 120, sites_limit: 50, whitelabel: 1 },
+    { id: 'starter', scans_limit: 30, sites_limit: 10, whitelabel: 0 },
+    { id: 'growth', scans_limit: 120, sites_limit: 50, whitelabel: 0 },
     { id: 'agency', scans_limit: 350, sites_limit: 200, whitelabel: 1 }
   ];
 }
@@ -641,15 +647,17 @@ async function ensureBillingSchema(env) {
 }
 
 async function ensurePlansSeeded(env) {
-  const existing = await env.DB.prepare('SELECT COUNT(*) AS count FROM plans').first();
-  if (Number(existing?.count || 0) > 0) {
-    return;
-  }
-
   const defaults = getPlanDefaults();
   for (const plan of defaults) {
     await env.DB.prepare(
-      'INSERT INTO plans (id, scans_limit, sites_limit, whitelabel, created_at) VALUES (?, ?, ?, ?, ?)'
+      [
+        'INSERT INTO plans (id, scans_limit, sites_limit, whitelabel, created_at)',
+        'VALUES (?, ?, ?, ?, ?)',
+        'ON CONFLICT(id) DO UPDATE SET',
+        'scans_limit = excluded.scans_limit,',
+        'sites_limit = excluded.sites_limit,',
+        'whitelabel = excluded.whitelabel'
+      ].join(' ')
     )
       .bind(plan.id, plan.scans_limit, plan.sites_limit, plan.whitelabel, nowIso())
       .run();
@@ -843,8 +851,23 @@ async function authorizeSiteRequest(request, env, siteId) {
   if (!site || !site.token_hash) {
     return false;
   }
+  const storedTokenHash = String(site.token_hash || '').trim();
+  if (!storedTokenHash) return false;
 
-  return String(site.token_hash) === siteToken;
+  const hashedIncomingToken = await sha256Hex(siteToken);
+  if (storedTokenHash.length === 64 && /^[a-f0-9]{64}$/i.test(storedTokenHash)) {
+    return timingSafeEqual(storedTokenHash, hashedIncomingToken);
+  }
+
+  // Legacy fallback for pre-hash records. If it matches, migrate in-place.
+  if (timingSafeEqual(storedTokenHash, siteToken)) {
+    await env.DB.prepare('UPDATE sites SET token_hash = ? WHERE id = ?')
+      .bind(hashedIncomingToken, siteId)
+      .run();
+    return true;
+  }
+
+  return false;
 }
 
 async function registerSite(request, env) {
@@ -857,6 +880,7 @@ async function registerSite(request, env) {
   const tenantId = body.tenant_id || 'default-tenant';
   const requestedPlanId = String(body.plan_id || '').trim();
   const siteToken = crypto.randomUUID().replace(/-/g, '');
+  const siteTokenHash = await sha256Hex(siteToken);
   const createdAt = nowIso();
 
   await ensurePlansSeeded(env);
@@ -887,7 +911,7 @@ async function registerSite(request, env) {
       body.php_version || '',
       body.plugin_version || '',
       body.timezone || 'UTC',
-      siteToken,
+      siteTokenHash,
       createdAt
     )
     .run();
@@ -1346,7 +1370,8 @@ async function createCheckoutSession(request, env, siteId) {
   }
 
   await updateTenantBilling(env, site.tenant_id, {
-    plan_id: requestedPlanId,
+    // Do not grant plan access here. Plan is activated only after Stripe webhook confirmation.
+    billing_status: String(billing.billing_status || 'trial'),
     checkout_session_id: String(session.id || ''),
     stripe_customer_id: session.customer || undefined
   });

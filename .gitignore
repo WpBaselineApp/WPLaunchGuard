@@ -5,3 +5,10 @@ playwright-report/
 .env.week0.local
 services/api-worker/.dev.vars
 .wrangler-home/
+test-results/
+dist/*.zip
+**/.DS_Store
+services/api-worker/.wrangler/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

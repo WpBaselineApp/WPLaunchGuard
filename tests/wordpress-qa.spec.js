@@ -121,20 +121,26 @@ const SUPPRESSED_LAZYLOAD_PATTERNS = [
   /intercom/i,
   /tawk/i
 ];
-const LAUNCHGUARD_SCAN_ID = String(process.env.LAUNCHGUARD_SCAN_ID || '').trim();
-const LAUNCHGUARD_PROGRESS_CALLBACK_URL = String(process.env.LAUNCHGUARD_PROGRESS_CALLBACK_URL || '').trim();
-const LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN = String(process.env.LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN || '').trim();
-const LAUNCHGUARD_PROGRESS_PROJECT = String(process.env.LAUNCHGUARD_PROGRESS_PROJECT || '').trim();
-const LAUNCHGUARD_PROGRESS_PROJECT_COUNT = Math.max(
+const BASELINE_SCAN_ID = String(process.env.BASELINE_SCAN_ID || process.env.LAUNCHGUARD_SCAN_ID || '').trim();
+const BASELINE_PROGRESS_CALLBACK_URL = String(
+  process.env.BASELINE_PROGRESS_CALLBACK_URL || process.env.LAUNCHGUARD_PROGRESS_CALLBACK_URL || ''
+).trim();
+const BASELINE_PROGRESS_CALLBACK_TOKEN = String(
+  process.env.BASELINE_PROGRESS_CALLBACK_TOKEN || process.env.LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN || ''
+).trim();
+const BASELINE_PROGRESS_PROJECT = String(
+  process.env.BASELINE_PROGRESS_PROJECT || process.env.LAUNCHGUARD_PROGRESS_PROJECT || ''
+).trim();
+const BASELINE_PROGRESS_PROJECT_COUNT = Math.max(
   1,
-  Number(process.env.LAUNCHGUARD_PROGRESS_PROJECT_COUNT || 1)
+  Number(process.env.BASELINE_PROGRESS_PROJECT_COUNT || process.env.LAUNCHGUARD_PROGRESS_PROJECT_COUNT || 1)
 );
-const LAUNCHGUARD_PROGRESS_ENABLED = Boolean(
-  LAUNCHGUARD_SCAN_ID &&
-  LAUNCHGUARD_PROGRESS_CALLBACK_URL &&
-  LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN
+const BASELINE_PROGRESS_ENABLED = Boolean(
+  BASELINE_SCAN_ID &&
+  BASELINE_PROGRESS_CALLBACK_URL &&
+  BASELINE_PROGRESS_CALLBACK_TOKEN
 );
-const CLOUD_SCAN_MODE = Boolean(LAUNCHGUARD_SCAN_ID);
+const CLOUD_SCAN_MODE = Boolean(BASELINE_SCAN_ID);
 const QA_URL_LIMIT = Math.max(0, Number(process.env.QA_URL_LIMIT || (CLOUD_SCAN_MODE ? 60 : 0)));
 const URL_PACE_MS = Math.max(0, Number(process.env.URL_PACE_MS || (CLOUD_SCAN_MODE ? 400 : 0)));
 const SITE_STRESS_TIMEOUT_THRESHOLD = Math.max(2, Number(process.env.SITE_STRESS_TIMEOUT_THRESHOLD || 3));
@@ -2341,23 +2347,23 @@ function writeWorkerShard(testInfo, totalInputUrls) {
 }
 
 function shouldEmitProgress(projectName) {
-  if (!LAUNCHGUARD_PROGRESS_ENABLED) return false;
-  if (!LAUNCHGUARD_PROGRESS_PROJECT) return true;
-  return String(projectName || '').trim() === LAUNCHGUARD_PROGRESS_PROJECT;
+  if (!BASELINE_PROGRESS_ENABLED) return false;
+  if (!BASELINE_PROGRESS_PROJECT) return true;
+  return String(projectName || '').trim() === BASELINE_PROGRESS_PROJECT;
 }
 
 async function postScanProgress(summaryPatch, status = 'running') {
-  if (!LAUNCHGUARD_PROGRESS_ENABLED) return;
+  if (!BASELINE_PROGRESS_ENABLED) return;
 
   try {
-    const response = await fetch(LAUNCHGUARD_PROGRESS_CALLBACK_URL, {
+    const response = await fetch(BASELINE_PROGRESS_CALLBACK_URL, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-scan-callback-token': LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN
+        'x-scan-callback-token': BASELINE_PROGRESS_CALLBACK_TOKEN
       },
       body: JSON.stringify({
-        scan_id: LAUNCHGUARD_SCAN_ID,
+        scan_id: BASELINE_SCAN_ID,
         status,
         summary: summaryPatch
       })
@@ -2439,7 +2445,7 @@ async function triggerSiteProtection(status, reason, url, projectName, index) {
         current_index: completedRuns,
         completed_urls: completedRuns,
         total_urls: totalRuns,
-        project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT,
+        project_count: BASELINE_PROGRESS_PROJECT_COUNT,
         last_update_at: timestamp
       },
       safety: {
@@ -2501,7 +2507,7 @@ async function notifyScanUrlStarted(projectName, index, url) {
       current_index: safeIndex + 1,
       completed_urls: completedRuns,
       total_urls: totalRuns,
-      project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT
+      project_count: BASELINE_PROGRESS_PROJECT_COUNT
     }
   });
 }
@@ -2521,7 +2527,7 @@ async function notifyScanUrlCompleted(projectName, index, url) {
       current_index: completedRuns,
       completed_urls: completedRuns,
       total_urls: totalRuns,
-      project_count: LAUNCHGUARD_PROGRESS_PROJECT_COUNT
+      project_count: BASELINE_PROGRESS_PROJECT_COUNT
     }
   });
 }

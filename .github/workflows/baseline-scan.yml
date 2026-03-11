@@ -283,11 +283,11 @@ jobs:
             PROJECT_COUNT=1
           fi
           PROGRESS_PROJECT="${PROJECTS[0]}"
-          URL_LIMIT="60"
+          URL_LIMIT="120"
           if [[ "$QUICK_ENABLED" == "true" ]]; then
-            URL_LIMIT="35"
+            URL_LIMIT="60"
           elif [[ "$VIEWPORT_PRESET" == "both" ]]; then
-            URL_LIMIT="40"
+            URL_LIMIT="90"
           fi
 
           PROJECTS_CSV=$(IFS=,; echo "${PROJECTS[*]}")
@@ -330,10 +330,15 @@ jobs:
           export LINK_CHECK_RETRY_BACKOFF_MS=500
           export LINK_CHECK_CONCURRENCY=2
           export QA_URL_LIMIT="$URL_LIMIT"
+          export QA_ALLOW_CLIENT_DATA_FALLBACK=false
           export URL_PACE_MS=400
-          export LAUNCHGUARD_SCAN_ID="${{ inputs.scan_id }}"
-          export LAUNCHGUARD_PROGRESS_PROJECT="$PROGRESS_PROJECT"
-          export LAUNCHGUARD_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
+          export BASELINE_SCAN_ID="${{ inputs.scan_id }}"
+          export BASELINE_PROGRESS_PROJECT="$PROGRESS_PROJECT"
+          export BASELINE_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
+          # Backward compatibility (legacy env names).
+          export LAUNCHGUARD_SCAN_ID="$BASELINE_SCAN_ID"
+          export LAUNCHGUARD_PROGRESS_PROJECT="$BASELINE_PROGRESS_PROJECT"
+          export LAUNCHGUARD_PROGRESS_PROJECT_COUNT="$BASELINE_PROGRESS_PROJECT_COUNT"
           export PDF_EXPORT_ENABLED="${{ inputs.pdf_export_enabled }}"
           export ZIP_EXPORT_ENABLED="${{ inputs.zip_export_enabled }}"
 
@@ -342,8 +347,11 @@ jobs:
             PROGRESS_CALLBACK_URL="${{ inputs.callback_url }}"
           fi
           if [[ -n "$PROGRESS_CALLBACK_URL" && -n "$CALLBACK_SECRET_TOKEN" ]]; then
-            export LAUNCHGUARD_PROGRESS_CALLBACK_URL="$PROGRESS_CALLBACK_URL"
-            export LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN="$CALLBACK_SECRET_TOKEN"
+            export BASELINE_PROGRESS_CALLBACK_URL="$PROGRESS_CALLBACK_URL"
+            export BASELINE_PROGRESS_CALLBACK_TOKEN="$CALLBACK_SECRET_TOKEN"
+            # Backward compatibility (legacy env names).
+            export LAUNCHGUARD_PROGRESS_CALLBACK_URL="$BASELINE_PROGRESS_CALLBACK_URL"
+            export LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN="$BASELINE_PROGRESS_CALLBACK_TOKEN"
           fi
 
           if [[ -n "$REST_BASE_INPUT" ]]; then
@@ -361,7 +369,7 @@ jobs:
 
           send_progress_callback() {
             local current_url="$1"
-            if [[ -z "$current_url" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_URL:-}" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
+            if [[ -z "$current_url" || -z "${BASELINE_PROGRESS_CALLBACK_URL:-}" || -z "${BASELINE_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
               return
             fi
 
@@ -381,16 +389,16 @@ jobs:
                 }
               }')
 
-            curl -sS -m 8 -X POST "${LAUNCHGUARD_PROGRESS_CALLBACK_URL}" \
+            curl -sS -m 8 -X POST "${BASELINE_PROGRESS_CALLBACK_URL}" \
               -H "content-type: application/json" \
-              -H "x-scan-callback-token: ${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN}" \
+              -H "x-scan-callback-token: ${BASELINE_PROGRESS_CALLBACK_TOKEN}" \
               --data "$payload" >/dev/null || true
           }
 
           send_terminal_callback() {
             local status="$1"
             local reason="$2"
-            if [[ -z "${LAUNCHGUARD_PROGRESS_CALLBACK_URL:-}" || -z "${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
+            if [[ -z "${BASELINE_PROGRESS_CALLBACK_URL:-}" || -z "${BASELINE_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
               return
             fi
             local payload
@@ -420,9 +428,9 @@ jobs:
                 }
               }')
 
-            curl -sS -m 8 -X POST "${LAUNCHGUARD_PROGRESS_CALLBACK_URL}" \
+            curl -sS -m 8 -X POST "${BASELINE_PROGRESS_CALLBACK_URL}" \
               -H "content-type: application/json" \
-              -H "x-scan-callback-token: ${LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN}" \
+              -H "x-scan-callback-token: ${BASELINE_PROGRESS_CALLBACK_TOKEN}" \
               --data "$payload" >/dev/null || true
           }
 
