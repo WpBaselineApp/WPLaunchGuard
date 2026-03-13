@@ -23,9 +23,9 @@ GITHUB_REF = "main"
 # Run: wrangler secret put STRIPE_PRICE_ID_STARTER  (and GROWTH, AGENCY)
 # For local development, add them to services/api-worker/.dev.vars (gitignored).
 # See services/api-worker/.dev.vars.example for the required format.
-STRIPE_PRICE_ID_STARTER = ""
-STRIPE_PRICE_ID_GROWTH = ""
-STRIPE_PRICE_ID_AGENCY = ""
+STRIPE_PRICE_ID_STARTER = "price_1T7MycIfnuQp2OJpzQOZQMPQ"
+STRIPE_PRICE_ID_GROWTH = "price_1T7MyvIfnuQp2OJpiDtlPhvn"
+STRIPE_PRICE_ID_AGENCY = "price_1T7Mz9IfnuQp2OJpMJjFFbFK"
 
 [[d1_databases]]
 binding = "DB"
@@ -34,7 +34,7 @@ database_name = "baseline-db-dev"
 # environment-specific. Replace this placeholder UUID with your actual D1 database ID.
 # Your database ID can be found in the Cloudflare dashboard under Workers & Pages > D1.
 # In CI, you may override this by passing --config wrangler.local.toml (gitignored).
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "253403b3-cc3e-4008-aaff-10e24bb9f9bc"
 
 [[r2_buckets]]
 binding = "ARTIFACTS_BUCKET"
