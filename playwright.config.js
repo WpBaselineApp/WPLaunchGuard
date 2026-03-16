@@ -5,6 +5,12 @@ const QA_MEDIA = String(process.env.QA_MEDIA || '').toLowerCase() === '1' || Str
 // Allow per-environment timeout overrides without code changes.
 // PW_TIMEOUT: per-test timeout ms (default 180s). Set PW_TIMEOUT=300000 for slower CI.
 const TEST_TIMEOUT = Number(process.env.PW_TIMEOUT || 180_000);
+const RETRY_OVERRIDE = Number(process.env.PW_RETRIES);
+const RETRIES = Number.isFinite(RETRY_OVERRIDE) && RETRY_OVERRIDE >= 0
+  ? Math.floor(RETRY_OVERRIDE)
+  : process.env.CI
+  ? 1
+  : 0;
 
 module.exports = defineConfig({
   testDir: './tests',
@@ -12,9 +18,8 @@ module.exports = defineConfig({
   expect: {
     timeout: 15000
   },
-  // Retry once on CI to absorb transient network/browser flakes.
-  // Never retry locally to keep the feedback loop fast.
-  retries: process.env.CI ? 1 : 0,
+  // Retry count is CI-safe by default but can be overridden with PW_RETRIES.
+  retries: RETRIES,
   workers: 5,
   fullyParallel: true,
   reporter: [

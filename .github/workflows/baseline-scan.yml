@@ -376,6 +376,8 @@ jobs:
           export QA_URL_LIMIT="$URL_LIMIT"
           export QA_ALLOW_CLIENT_DATA_FALLBACK=false
           export URL_PACE_MS=400
+          export HEADED_BLOCK_RETRY=false
+          export PW_RETRIES=0
           export BASELINE_SCAN_ID="${{ inputs.scan_id }}"
           export BASELINE_PROGRESS_PROJECT="$PROGRESS_PROJECT"
           export BASELINE_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
@@ -658,6 +660,7 @@ jobs:
           fi
 
           FINAL_STATUS="$FORCED_STATUS"
+          RUN_QA_CONCLUSION="${{ steps.run_qa.conclusion }}"
 
           TARGET_URL="$CALLBACK_SECRET_URL"
           if [[ -n "${{ inputs.callback_url }}" ]]; then
@@ -697,6 +700,9 @@ jobs:
           if [[ -z "$FINAL_STATUS" && ( "$SUMMARY_RUN_STATE" == "protected_stopped" || "$SUMMARY_RUN_STATE" == "stalled" ) ]]; then
             FINAL_STATUS="$SUMMARY_RUN_STATE"
           fi
+          if [[ -z "$FINAL_STATUS" && "$RUN_QA_CONCLUSION" == "cancelled" ]]; then
+            FINAL_STATUS="cancelled"
+          fi
           if [[ -z "$FINAL_STATUS" ]]; then
             FINAL_STATUS="completed"
             if [[ "$EXIT_CODE" != "0" ]]; then
@@ -711,6 +717,7 @@ jobs:
             --arg workflow_url "$WORKFLOW_URL" \
             --arg workflow_attempt "${{ github.run_attempt }}" \
             --arg qa_exit_code "$EXIT_CODE" \
+            --arg qa_step_conclusion "$RUN_QA_CONCLUSION" \
             --arg client_name "${{ inputs.client_name }}" \
             --arg client_label "${{ inputs.client_label }}" \
             --arg site_id "${{ inputs.site_id }}" \
@@ -734,6 +741,7 @@ jobs:
                 workflow_url: $workflow_url,
                 workflow_attempt: $workflow_attempt,
                 qa_exit_code: $qa_exit_code,
+                qa_step_conclusion: $qa_step_conclusion,
                 client_name: $client_name,
                 client_label: $client_label,
                 site_id: $site_id,
@@ -759,7 +767,7 @@ jobs:
             --data "$PAYLOAD"
 
       - name: Fail job if QA failed
-        if: steps.run_qa.outputs.exit_code != '0' && steps.run_qa.outputs.forced_final_status == ''
+        if: steps.run_qa.outputs.exit_code != '0' && steps.run_qa.outputs.forced_final_status == '' && steps.run_qa.conclusion != 'cancelled'
         run: |
           echo "QA command exited with code ${{ steps.run_qa.outputs.exit_code }}"
           exit 1
