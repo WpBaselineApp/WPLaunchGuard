@@ -147,9 +147,32 @@ const BASELINE_PROGRESS_CALLBACK_TOKEN = String(
 const BASELINE_PROGRESS_PROJECT = String(
   process.env.BASELINE_PROGRESS_PROJECT || process.env.LAUNCHGUARD_PROGRESS_PROJECT || ''
 ).trim();
+const BASELINE_PROGRESS_PROJECTS = (() => {
+  const raw = String(
+    process.env.BASELINE_PROGRESS_PROJECTS || process.env.LAUNCHGUARD_PROGRESS_PROJECTS || ''
+  ).trim();
+  const parsed = raw
+    ? raw
+        .split(',')
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    : [];
+  if (parsed.length > 0) {
+    return Array.from(new Set(parsed));
+  }
+  if (BASELINE_PROGRESS_PROJECT) {
+    return [BASELINE_PROGRESS_PROJECT];
+  }
+  return [];
+})();
 const BASELINE_PROGRESS_PROJECT_COUNT = Math.max(
   1,
   Number(process.env.BASELINE_PROGRESS_PROJECT_COUNT || process.env.LAUNCHGUARD_PROGRESS_PROJECT_COUNT || 1)
+);
+const BASELINE_PROGRESS_PROJECT_TOTAL = Math.max(
+  BASELINE_PROGRESS_PROJECT_COUNT,
+  BASELINE_PROGRESS_PROJECTS.length || 0,
+  1
 );
 const BASELINE_PROGRESS_ENABLED = Boolean(
   BASELINE_SCAN_ID &&
@@ -2354,8 +2377,25 @@ function writeWorkerShard(testInfo, totalInputUrls) {
 
 function shouldEmitProgress(projectName) {
   if (!BASELINE_PROGRESS_ENABLED) return false;
-  if (!BASELINE_PROGRESS_PROJECT) return true;
-  return String(projectName || '').trim() === BASELINE_PROGRESS_PROJECT;
+  if (BASELINE_PROGRESS_PROJECTS.length === 0) return true;
+  return BASELINE_PROGRESS_PROJECTS.includes(String(projectName || '').trim());
+}
+
+function getProjectProgressContext(projectName, index) {
+  const totalUrlsPerProject = Math.max(1, urls.length);
+  const normalizedProjectName = String(projectName || '').trim();
+  let projectPosition = BASELINE_PROGRESS_PROJECTS.indexOf(normalizedProjectName);
+  if (projectPosition < 0) {
+    projectPosition = 0;
+  }
+  const totalRuns = Math.max(1, totalUrlsPerProject * BASELINE_PROGRESS_PROJECT_TOTAL);
+  const runsBeforeProject = Math.max(0, projectPosition * totalUrlsPerProject);
+  const safeIndex = Math.max(0, index);
+  return {
+    totalRuns,
+    runsBeforeProject,
+    safeIndex
+  };
 }
 
 async function postScanProgress(summaryPatch, status = 'running') {
@@ -2438,8 +2478,12 @@ async function triggerSiteProtection(status, reason, url, projectName, index) {
     templateKey: ''
   });
 
-  const totalRuns = Math.max(1, urls.length);
-  const completedRuns = Math.max(0, Math.min(totalRuns, index + 1));
+  const progressContext = getProjectProgressContext(projectName, index);
+  const totalRuns = progressContext.totalRuns;
+  const completedRuns = Math.max(
+    0,
+    Math.min(totalRuns, progressContext.runsBeforeProject + progressContext.safeIndex + 1)
+  );
   await postScanProgress(
     {
       run_state: safeStatus,
@@ -2500,9 +2544,13 @@ async function evaluateSiteSafety(result, url, projectName, index) {
 
 async function notifyScanUrlStarted(projectName, index, url) {
   if (!shouldEmitProgress(projectName)) return;
-  const totalRuns = Math.max(1, urls.length);
-  const safeIndex = Math.max(0, index);
-  const completedRuns = Math.max(0, safeIndex);
+  const progressContext = getProjectProgressContext(projectName, index);
+  const totalRuns = progressContext.totalRuns;
+  const safeIndex = progressContext.safeIndex;
+  const completedRuns = Math.max(
+    0,
+    Math.min(totalRuns, progressContext.runsBeforeProject + safeIndex)
+  );
   const percent = Math.max(1, Math.min(99, Math.round((completedRuns / totalRuns) * 100)));
 
   await postScanProgress({
@@ -2510,7 +2558,7 @@ async function notifyScanUrlStarted(projectName, index, url) {
     progress: {
       phase: 'scanning',
       current_url: url,
-      current_index: safeIndex + 1,
+      current_index: Math.min(totalRuns, progressContext.runsBeforeProject + safeIndex + 1),
       completed_urls: completedRuns,
       total_urls: totalRuns,
       project_count: BASELINE_PROGRESS_PROJECT_COUNT
@@ -2520,8 +2568,12 @@ async function notifyScanUrlStarted(projectName, index, url) {
 
 async function notifyScanUrlCompleted(projectName, index, url) {
   if (!shouldEmitProgress(projectName)) return;
-  const totalRuns = Math.max(1, urls.length);
-  const completedRuns = Math.max(1, Math.min(totalRuns, index + 1));
+  const progressContext = getProjectProgressContext(projectName, index);
+  const totalRuns = progressContext.totalRuns;
+  const completedRuns = Math.max(
+    1,
+    Math.min(totalRuns, progressContext.runsBeforeProject + progressContext.safeIndex + 1)
+  );
   const percent = Math.max(1, Math.min(99, Math.round((completedRuns / totalRuns) * 100)));
 
   await postScanProgress({

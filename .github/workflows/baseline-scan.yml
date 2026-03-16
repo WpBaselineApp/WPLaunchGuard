@@ -325,11 +325,13 @@ jobs:
             PROJECT_COUNT=1
           fi
           PROGRESS_PROJECT="${PROJECTS[0]}"
-          URL_LIMIT="120"
+          MAX_TOTAL_RUNS="120"
           if [[ "$QUICK_ENABLED" == "true" ]]; then
-            URL_LIMIT="60"
-          elif [[ "$VIEWPORT_PRESET" == "both" ]]; then
-            URL_LIMIT="90"
+            MAX_TOTAL_RUNS="80"
+          fi
+          URL_LIMIT=$(( MAX_TOTAL_RUNS / PROJECT_COUNT ))
+          if [[ "$URL_LIMIT" -lt 12 ]]; then
+            URL_LIMIT="12"
           fi
 
           PROJECTS_CSV=$(IFS=,; echo "${PROJECTS[*]}")
@@ -377,10 +379,12 @@ jobs:
           export BASELINE_SCAN_ID="${{ inputs.scan_id }}"
           export BASELINE_PROGRESS_PROJECT="$PROGRESS_PROJECT"
           export BASELINE_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
+          export BASELINE_PROGRESS_PROJECTS="$PROJECTS_CSV"
           # Backward compatibility (legacy env names).
           export LAUNCHGUARD_SCAN_ID="$BASELINE_SCAN_ID"
           export LAUNCHGUARD_PROGRESS_PROJECT="$BASELINE_PROGRESS_PROJECT"
           export LAUNCHGUARD_PROGRESS_PROJECT_COUNT="$BASELINE_PROGRESS_PROJECT_COUNT"
+          export LAUNCHGUARD_PROGRESS_PROJECTS="$BASELINE_PROGRESS_PROJECTS"
           export PDF_EXPORT_ENABLED="${{ inputs.pdf_export_enabled }}"
           export ZIP_EXPORT_ENABLED="${{ inputs.zip_export_enabled }}"
 
@@ -394,6 +398,33 @@ jobs:
             # Backward compatibility (legacy env names).
             export LAUNCHGUARD_PROGRESS_CALLBACK_URL="$BASELINE_PROGRESS_CALLBACK_URL"
             export LAUNCHGUARD_PROGRESS_CALLBACK_TOKEN="$BASELINE_PROGRESS_CALLBACK_TOKEN"
+          fi
+
+          if [[ -n "${BASELINE_PROGRESS_CALLBACK_URL:-}" && -n "${BASELINE_PROGRESS_CALLBACK_TOKEN:-}" ]]; then
+            RUN_STARTED_PAYLOAD=$(jq -cn \
+              --arg scan_id "${{ inputs.scan_id }}" \
+              --arg workflow_run_id "${{ github.run_id }}" \
+              --arg workflow_url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+              '{
+                scan_id: $scan_id,
+                status: "running",
+                summary: {
+                  run_state: "running",
+                  workflow_run_id: $workflow_run_id,
+                  workflow_url: $workflow_url,
+                  progress_percent: 5,
+                  progress: {
+                    phase: "workflow_started",
+                    percent: 5,
+                    last_update_at: (now | todateiso8601)
+                  }
+                }
+              }')
+
+            curl -sS -m 8 -X POST "${BASELINE_PROGRESS_CALLBACK_URL}" \
+              -H "content-type: application/json" \
+              -H "x-scan-callback-token: ${BASELINE_PROGRESS_CALLBACK_TOKEN}" \
+              --data "$RUN_STARTED_PAYLOAD" >/dev/null || true
           fi
 
           if [[ -n "$REST_BASE_INPUT" ]]; then
