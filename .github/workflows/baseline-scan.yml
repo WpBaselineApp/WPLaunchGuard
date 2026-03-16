@@ -325,13 +325,19 @@ jobs:
             PROJECT_COUNT=1
           fi
           PROGRESS_PROJECT="${PROJECTS[0]}"
-          MAX_TOTAL_RUNS="120"
+          MAX_TOTAL_RUNS="80"
           if [[ "$QUICK_ENABLED" == "true" ]]; then
-            MAX_TOTAL_RUNS="80"
+            MAX_TOTAL_RUNS="50"
           fi
           URL_LIMIT=$(( MAX_TOTAL_RUNS / PROJECT_COUNT ))
           if [[ "$URL_LIMIT" -lt 12 ]]; then
             URL_LIMIT="12"
+          fi
+          MAX_SCAN_SECONDS="2100"
+          if [[ "$QUICK_ENABLED" == "true" ]]; then
+            MAX_SCAN_SECONDS="1200"
+          elif [[ "$VIEWPORT_PRESET" == "both" ]]; then
+            MAX_SCAN_SECONDS="2700"
           fi
 
           PROJECTS_CSV=$(IFS=,; echo "${PROJECTS[*]}")
@@ -353,6 +359,7 @@ jobs:
           echo "effective_responsive_enabled=$RESPONSIVE_ENABLED" >> "$GITHUB_OUTPUT"
           echo "effective_viewport_preset=$VIEWPORT_PRESET" >> "$GITHUB_OUTPUT"
           echo "effective_progress_project=$PROGRESS_PROJECT" >> "$GITHUB_OUTPUT"
+          echo "effective_max_scan_seconds=$MAX_SCAN_SECONDS" >> "$GITHUB_OUTPUT"
           echo "forced_final_status=" >> "$GITHUB_OUTPUT"
           echo "forced_run_state=" >> "$GITHUB_OUTPUT"
 
@@ -536,7 +543,7 @@ jobs:
 
           echo "Running command: ${CMD[*]}"
           LAST_PROGRESS_URL=""
-          "${CMD[@]}" 2>&1 | while IFS= read -r line; do
+          timeout --signal=TERM --kill-after=30s "$MAX_SCAN_SECONDS" "${CMD[@]}" 2>&1 | while IFS= read -r line; do
             echo "$line"
             if [[ "$line" == *"QA: "* ]]; then
               CURRENT_URL=$(printf '%s\n' "$line" | grep -Eo 'https?://[^[:space:]]+' | head -n1 || true)
@@ -548,6 +555,15 @@ jobs:
             fi
           done
           EXIT_CODE=${PIPESTATUS[0]}
+          if [[ "$EXIT_CODE" == "124" ]]; then
+            RUNTIME_REASON="Cloud runtime cap reached (${MAX_SCAN_SECONDS}s). Scan auto-stopped to protect crawl budget."
+            echo "$RUNTIME_REASON"
+            send_terminal_callback "protected_stopped" "$RUNTIME_REASON"
+            echo "forced_final_status=protected_stopped" >> "$GITHUB_OUTPUT"
+            echo "forced_run_state=protected_stopped" >> "$GITHUB_OUTPUT"
+            echo "exit_code=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
           exit 0
 
