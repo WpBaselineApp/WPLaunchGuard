@@ -186,6 +186,14 @@ const SITE_STRESS_TIMEOUT_THRESHOLD = Math.max(2, Number(process.env.SITE_STRESS
 const SITE_STRESS_NAV_FAILURE_THRESHOLD = Math.max(3, Number(process.env.SITE_STRESS_NAV_FAILURE_THRESHOLD || 4));
 const SITE_STRESS_HTTP5XX_THRESHOLD = Math.max(2, Number(process.env.SITE_STRESS_HTTP5XX_THRESHOLD || 3));
 const SITE_STRESS_TIMEOUT_RATIO_THRESHOLD = Math.max(0.2, Number(process.env.SITE_STRESS_TIMEOUT_RATIO_THRESHOLD || 0.4));
+const CLOUD_TIMEOUT_FAILFAST_THRESHOLD = Math.max(
+  1,
+  Number(process.env.CLOUD_TIMEOUT_FAILFAST_THRESHOLD || 2)
+);
+const CLOUD_MOBILE_TIMEOUT_FAILFAST_THRESHOLD = Math.max(
+  1,
+  Number(process.env.CLOUD_MOBILE_TIMEOUT_FAILFAST_THRESHOLD || 2)
+);
 
 const results = [];
 const issues = [];
@@ -202,6 +210,10 @@ const siteSafetyState = {
   timeoutFailures: 0,
   navFailures: 0,
   http5xxFailures: 0
+};
+const cloudTimeoutState = {
+  totalTimeouts: 0,
+  mobileTimeouts: 0
 };
 
 function loadUrls() {
@@ -2381,6 +2393,12 @@ function shouldEmitProgress(projectName) {
   return BASELINE_PROGRESS_PROJECTS.includes(String(projectName || '').trim());
 }
 
+function extractUrlFromTestTitle(title) {
+  const match = String(title || '').match(/QA:\s+(https?:\/\/\S+)/i);
+  if (!match || !match[1]) return '';
+  return String(match[1]).replace(/\)+$/, '');
+}
+
 function getProjectProgressContext(projectName, index) {
   const totalUrlsPerProject = Math.max(1, urls.length);
   const normalizedProjectName = String(projectName || '').trim();
@@ -2591,6 +2609,36 @@ async function notifyScanUrlCompleted(projectName, index, url) {
 }
 
 test.describe('WordPress QA suite', () => {
+  test.afterEach(async ({}, testInfo) => {
+    if (!CLOUD_SCAN_MODE || siteSafetyState.triggered) return;
+    const status = String(testInfo?.status || '').toLowerCase();
+    if (status !== 'timedout' && status !== 'interrupted') return;
+
+    const projectName = String(testInfo?.project?.name || '').trim();
+    const isMobileProject = projectName === 'iphone-14' || projectName === 'ipad';
+    cloudTimeoutState.totalTimeouts += 1;
+    if (isMobileProject) {
+      cloudTimeoutState.mobileTimeouts += 1;
+    }
+
+    const shouldFailFast =
+      cloudTimeoutState.totalTimeouts >= CLOUD_TIMEOUT_FAILFAST_THRESHOLD ||
+      cloudTimeoutState.mobileTimeouts >= CLOUD_MOBILE_TIMEOUT_FAILFAST_THRESHOLD;
+    if (!shouldFailFast) return;
+
+    const targetUrl = extractUrlFromTestTitle(testInfo?.title || '');
+    const index = targetUrl ? Math.max(0, urls.indexOf(targetUrl)) : 0;
+    const reason = [
+      `cloud_timeout_failfast`,
+      `project=${projectName || 'unknown'}`,
+      `status=${status}`,
+      `timeouts_total=${cloudTimeoutState.totalTimeouts}`,
+      `timeouts_mobile=${cloudTimeoutState.mobileTimeouts}`
+    ].join(', ');
+
+    await triggerSiteProtection('protected_stopped', reason, targetUrl, projectName, index);
+  });
+
   test.afterAll(async ({}, testInfo) => {
     writeWorkerShard(testInfo, urls.length);
   });

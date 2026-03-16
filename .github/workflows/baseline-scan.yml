@@ -373,11 +373,16 @@ jobs:
           export LINK_CHECK_RETRIES=1
           export LINK_CHECK_RETRY_BACKOFF_MS=500
           export LINK_CHECK_CONCURRENCY=2
+          export NAV_RETRIES=0
+          export STAGING_FALLBACK=false
           export QA_URL_LIMIT="$URL_LIMIT"
           export QA_ALLOW_CLIENT_DATA_FALLBACK=false
           export URL_PACE_MS=400
           export HEADED_BLOCK_RETRY=false
           export PW_RETRIES=0
+          export PW_TIMEOUT=150000
+          export CLOUD_TIMEOUT_FAILFAST_THRESHOLD=2
+          export CLOUD_MOBILE_TIMEOUT_FAILFAST_THRESHOLD=2
           export BASELINE_SCAN_ID="${{ inputs.scan_id }}"
           export BASELINE_PROGRESS_PROJECT="$PROGRESS_PROJECT"
           export BASELINE_PROGRESS_PROJECT_COUNT="$PROJECT_COUNT"
