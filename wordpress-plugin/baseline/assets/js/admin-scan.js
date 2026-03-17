@@ -26,6 +26,16 @@ function clampNumber(value, min, max) {
   return parsed;
 }
 
+function hasStructuredProgress(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  var progress = payload.progress && typeof payload.progress === 'object' ? payload.progress : {};
+  if (Number.isFinite(Number(payload.progress_percent))) return true;
+  if (Number.isFinite(Number(progress.percent))) return true;
+  if (Number.isFinite(Number(progress.completed_urls))) return true;
+  if (Number.isFinite(Number(progress.total_urls))) return true;
+  return false;
+}
+
 function parseIsoMs(value) {
   var ms = Date.parse(String(value || '').trim());
   return Number.isFinite(ms) ? ms : 0;
@@ -53,15 +63,20 @@ function emitTelemetry(eventName, detail) {
 function setLinkState(anchorEl, url) {
   if (!anchorEl) return;
   var safeUrl = String(url || '').trim();
+  var hideWhenUnavailable = anchorEl.getAttribute('data-hide-unavailable') === '1';
   if (!safeUrl) {
     anchorEl.setAttribute('aria-disabled', 'true');
     anchorEl.classList.add('is-disabled');
     anchorEl.setAttribute('href', '#');
+    if (hideWhenUnavailable) {
+      anchorEl.classList.add('is-hidden');
+    }
     return;
   }
   anchorEl.removeAttribute('aria-disabled');
   anchorEl.classList.remove('is-disabled');
   anchorEl.setAttribute('href', safeUrl);
+  anchorEl.classList.remove('is-hidden');
 }
 
 function setButtonState(buttonEl, enabled) {
@@ -75,6 +90,22 @@ function setButtonState(buttonEl, enabled) {
   buttonEl.setAttribute('disabled', 'disabled');
   buttonEl.setAttribute('aria-disabled', 'true');
   buttonEl.classList.add('is-disabled');
+}
+
+function setButtonVisibility(buttonEl, visible) {
+  if (!buttonEl) return;
+  buttonEl.classList.toggle('is-hidden', !visible);
+}
+
+function setStatusPill(pillEl, status) {
+  if (!pillEl) return;
+  var normalized = normalizeStatus(status);
+  Array.prototype.slice.call(pillEl.classList).forEach(function(className) {
+    if (className.indexOf('status-') === 0) {
+      pillEl.classList.remove(className);
+    }
+  });
+  pillEl.classList.add('status-' + normalized);
 }
 
 function updateDashboardSummary() {
@@ -348,6 +379,7 @@ updateDashboardSummary();
   var titleEl = document.getElementById('baseline-modal-title');
   var scanIdEl = document.getElementById('baseline-modal-scan-id');
   var statusEl = document.getElementById('baseline-modal-status');
+  var statusPillEl = document.getElementById('baseline-modal-status-pill');
   var progressTextEl = document.getElementById('baseline-modal-progress-text');
   var progressBarEl = document.getElementById('baseline-modal-progress-bar');
   var progressWrapEl = modal.querySelector('.baseline-modal__progress');
@@ -460,7 +492,8 @@ return;
 
     if (isRunningStatus(status)) {
       var syntheticCap = status === 'dispatched' ? 85 : 95;
-      if (progress <= state.lastProgress && state.lastProgress < syntheticCap) {
+      var canUseSyntheticProgress = !hasStructuredProgress(payload);
+      if (canUseSyntheticProgress && progress <= state.lastProgress && state.lastProgress < syntheticCap) {
         progress = state.lastProgress + 1;
       }
       state.lastProgress = Math.max(state.lastProgress, progress);
@@ -488,6 +521,7 @@ return;
     updateElapsedLabel();
 
     if (statusEl) statusEl.textContent = status;
+    setStatusPill(statusPillEl, status);
     if (progressTextEl) progressTextEl.textContent = progress + '%';
     if (progressBarEl) progressBarEl.style.width = progress + '%';
     if (progressWrapEl) progressWrapEl.setAttribute('aria-valuenow', String(progress));
@@ -495,7 +529,10 @@ return;
       var currentUrl = readCurrentUrl(payload);
       currentUrlEl.textContent = currentUrl || 'Waiting for live scan telemetry...';
     }
-    if (etaTextEl) etaTextEl.textContent = buildProgressLine(payload);
+    if (etaTextEl) {
+      var progressLine = buildProgressLine(payload);
+      etaTextEl.textContent = progressLine || 'Preparing scan telemetry...';
+    }
 
     var branch = getBranchState(payload);
     if (statusMessageEl) statusMessageEl.textContent = branch.message;
@@ -517,9 +554,23 @@ return;
 
     var canStop = isRunningStatus(status);
     setButtonState(stopBtn, canStop);
+    setButtonVisibility(stopBtn, canStop);
 
     var canRetrySafe = status === 'failed' || status === 'cancelled' || status === 'stalled' || status === 'protected_stopped';
     setButtonState(retrySafeBtn, canRetrySafe);
+    setButtonVisibility(retrySafeBtn, canRetrySafe);
+
+    if (viewReportEl) {
+      viewReportEl.classList.remove('button-primary');
+    }
+    if (stopBtn) {
+      stopBtn.classList.remove('button-primary');
+    }
+    if (status === 'completed' && String(payload.report_url || '').trim() !== '' && viewReportEl) {
+      viewReportEl.classList.add('button-primary');
+    } else if (canStop && stopBtn) {
+      stopBtn.classList.add('button-primary');
+    }
 
     if (isRunningStatus(previousStatus) && isTerminalStatus(status)) {
       showCompletionNotice(status, payload);
@@ -681,7 +732,8 @@ setButtonState(stopBtn, true);
       var progress = clampNumber(payload.progress_percent, 0, 100);
       if (isRunningStatus(status)) {
         var syntheticCap = status === 'dispatched' ? 85 : 95;
-        if (progress <= state.lastProgress && state.lastProgress < syntheticCap) {
+        var canUseSyntheticProgress = !hasStructuredProgress(payload);
+        if (canUseSyntheticProgress && progress <= state.lastProgress && state.lastProgress < syntheticCap) {
 progress = state.lastProgress + 1;
         }
         state.lastProgress = Math.max(state.lastProgress, progress);

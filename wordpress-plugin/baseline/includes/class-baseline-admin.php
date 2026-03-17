@@ -9,12 +9,14 @@ class Baseline_Admin
     private const DEFAULT_API_BASE = 'https://baseline-api.simonrankine4.workers.dev';
     private const LEGACY_API_BASE = 'https://launchguard-api.simonrankine4.workers.dev';
     private const OPTION_API_BASE = 'baseline_api_base_url';
+    private const OPTION_SCHEMA_VERSION = 'baseline_schema_version';
+    private const OPTION_LICENSE_KEY = 'baseline_license_key';
     private const OPTION_SITE_TOKEN = 'baseline_site_token';
     private const OPTION_SITE_ID = 'baseline_site_id';
-    private const OPTION_TENANT_ID = 'baseline_tenant_id';
     private const OPTION_LAST_SCAN_ID = 'baseline_last_scan_id';
     private const OPTION_DEFAULT_FORM_MODE = 'baseline_default_form_mode';
     private const OPTION_SCAN_DEFAULTS = 'baseline_scan_defaults';
+    private const SCHEMA_VERSION_V2 = '2.0.0';
 
     private const META_SCAN_OPTIONS = '_baseline_scan_options';
     private const META_SCAN_USE_SITE_DEFAULTS = '_baseline_scan_use_site_defaults';
@@ -22,16 +24,19 @@ class Baseline_Admin
 
     public function __construct()
     {
+        add_action('admin_init', [$this, 'apply_v2_hard_cut'], 5);
         add_action('admin_menu', [$this, 'register_menu']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
 
-        add_action('admin_post_baseline_register_site', [$this, 'handle_register_site']);
+        add_action('admin_post_baseline_activate_site', [$this, 'handle_activate_site']);
         add_action('admin_post_baseline_run_scan', [$this, 'handle_run_scan']);
         add_action('admin_post_baseline_run_page_scan', [$this, 'handle_run_page_scan']);
         add_action('admin_post_baseline_cancel_scan', [$this, 'handle_cancel_scan']);
         add_action('admin_post_baseline_save_branding', [$this, 'handle_save_branding']);
         add_action('admin_post_baseline_start_checkout', [$this, 'handle_start_checkout']);
+        add_action('admin_post_baseline_remove_license_site', [$this, 'handle_remove_license_site']);
+        add_action('admin_post_baseline_rotate_license_key', [$this, 'handle_rotate_license_key']);
         add_action('wp_ajax_baseline_poll_scan', [$this, 'handle_poll_scan']);
         add_action('wp_ajax_baseline_cancel_scan', [$this, 'handle_cancel_scan_ajax']);
         add_action('admin_bar_menu', [$this, 'render_active_scan_toolbar_chip'], 100);
@@ -50,7 +55,7 @@ class Baseline_Admin
             'manage_options',
             'baseline-dashboard',
             [$this, 'render_dashboard'],
-            'dashicons-shield-alt',
+            $this->menu_icon_data_uri(),
             65
         );
 
@@ -74,8 +79,8 @@ class Baseline_Admin
 
         add_submenu_page(
             'baseline-dashboard',
-            __('Billing', 'baseline'),
-            __('Billing', 'baseline'),
+            __('License & Plan', 'baseline'),
+            __('License & Plan', 'baseline'),
             'manage_options',
             'baseline-billing',
             [$this, 'render_billing']
@@ -96,12 +101,48 @@ class Baseline_Admin
         }
     }
 
+    private function menu_icon_data_uri(): string
+    {
+        $iconPath = BASELINE_PLUGIN_DIR . 'assets/images/baseline-icon.svg';
+        if (!file_exists($iconPath)) {
+            return 'dashicons-chart-line';
+        }
+
+        $svg = file_get_contents($iconPath);
+        if (!is_string($svg) || trim($svg) === '') {
+            return 'dashicons-chart-line';
+        }
+
+        return 'data:image/svg+xml;base64,' . base64_encode($svg);
+    }
+
+    public function apply_v2_hard_cut(): void
+    {
+        $installedVersion = (string) get_option(self::OPTION_SCHEMA_VERSION, '');
+        if ($installedVersion === self::SCHEMA_VERSION_V2) {
+            return;
+        }
+
+        // v2 hard cut: remove legacy registration data and require fresh activation.
+        delete_option('baseline_tenant_id');
+        update_option(self::OPTION_SITE_ID, '');
+        update_option(self::OPTION_SITE_TOKEN, '');
+        update_option(self::OPTION_LAST_SCAN_ID, '');
+        update_option(self::OPTION_SCHEMA_VERSION, self::SCHEMA_VERSION_V2);
+    }
+
     public function register_settings(): void
     {
         register_setting('baseline_settings_group', self::OPTION_API_BASE, [
             'type' => 'string',
             'sanitize_callback' => [$this, 'sanitize_api_base_setting'],
             'default' => self::DEFAULT_API_BASE
+        ]);
+
+        register_setting('baseline_settings_group', self::OPTION_LICENSE_KEY, [
+            'type' => 'string',
+            'sanitize_callback' => 'sanitize_text_field',
+            'default' => ''
         ]);
 
         register_setting('baseline_settings_group', self::OPTION_SITE_TOKEN, [
@@ -111,12 +152,6 @@ class Baseline_Admin
         ]);
 
         register_setting('baseline_settings_group', self::OPTION_SITE_ID, [
-            'type' => 'string',
-            'sanitize_callback' => 'sanitize_text_field',
-            'default' => ''
-        ]);
-
-        register_setting('baseline_settings_group', self::OPTION_TENANT_ID, [
             'type' => 'string',
             'sanitize_callback' => 'sanitize_text_field',
             'default' => ''
@@ -194,8 +229,7 @@ class Baseline_Admin
         }
 
         $defaultHost = strtolower((string) wp_parse_url(self::DEFAULT_API_BASE, PHP_URL_HOST));
-        $legacyHost = strtolower((string) wp_parse_url(self::LEGACY_API_BASE, PHP_URL_HOST));
-        $allowedHosts = [$defaultHost, $legacyHost];
+        $allowedHosts = [$defaultHost];
 
         if (defined('BASELINE_ALLOWED_API_HOSTS') && is_string(BASELINE_ALLOWED_API_HOSTS) && BASELINE_ALLOWED_API_HOSTS !== '') {
             $extraHosts = array_map('trim', explode(',', BASELINE_ALLOWED_API_HOSTS));
@@ -459,6 +493,44 @@ class Baseline_Admin
         echo '</p></div>';
     }
 
+    private function render_brand_header(string $title, string $subtitle, array $badges = []): void
+    {
+        $wordmarkPath = BASELINE_PLUGIN_DIR . 'assets/images/baseline-wordmark.svg';
+        $wordmarkUrl = BASELINE_PLUGIN_URL . 'assets/images/baseline-wordmark.svg';
+
+        echo '<div class="baseline-page-header baseline-brand-header">';
+        echo '<div class="baseline-page-title">';
+        echo '<div class="baseline-brand-lockup">';
+        if (file_exists($wordmarkPath)) {
+            echo '<img class="baseline-brand-wordmark" src="' . esc_url($wordmarkUrl) . '" alt="Baseline" />';
+        } else {
+            echo '<span class="baseline-brand-fallback">Baseline</span>';
+        }
+        echo '</div>';
+        echo '<h1>' . esc_html($title) . '</h1>';
+        if ($subtitle !== '') {
+            echo '<p class="baseline-page-subtitle">' . esc_html($subtitle) . '</p>';
+        }
+        echo '</div>';
+        echo '<div class="baseline-page-meta">';
+        foreach ($badges as $badge) {
+            $text = sanitize_text_field((string) ($badge['text'] ?? ''));
+            $variant = sanitize_key((string) ($badge['variant'] ?? 'default'));
+            if ($text === '') {
+                continue;
+            }
+            $class = 'baseline-badge';
+            if ($variant === 'success') {
+                $class .= ' is-success';
+            } elseif ($variant === 'warning') {
+                $class .= ' is-warning';
+            }
+            echo '<span class="' . esc_attr($class) . '">' . esc_html($text) . '</span>';
+        }
+        echo '</div>';
+        echo '</div>';
+    }
+
     public function render_dashboard(): void
     {
         $siteId = $this->get_option(self::OPTION_SITE_ID);
@@ -466,28 +538,19 @@ class Baseline_Admin
         $siteHost = wp_parse_url(home_url('/'), PHP_URL_HOST);
 
         echo '<div class="wrap baseline-wrap baseline-dashboard">';
-        echo '<div class="baseline-page-header">';
-        echo '<div class="baseline-page-title">';
-        echo '<h1>Baseline</h1>';
-        echo '<p class="baseline-page-subtitle">Cloud QA control center for scans, evidence, and client-ready reporting.</p>';
-        echo '</div>';
-        echo '<div class="baseline-page-meta">';
-        echo '<span class="baseline-badge ' . ($connected ? 'is-success' : 'is-warning') . '">' . ($connected ? 'Connected' : 'Not Connected') . '</span>';
+        $headerBadges = [
+            ['text' => $connected ? 'Connected' : 'Not Connected', 'variant' => $connected ? 'success' : 'warning']
+        ];
         if (!empty($siteHost)) {
-            echo '<span class="baseline-badge">' . esc_html((string) $siteHost) . '</span>';
+            $headerBadges[] = ['text' => (string) $siteHost];
         }
-        echo '</div>';
-        echo '</div>';
+        $this->render_brand_header('Dashboard', 'Cloud QA control center for scans, evidence, and client-ready reporting.', $headerBadges);
 
         if (!$connected) {
             echo '<div class="baseline-card baseline-card-hero">';
-            echo '<h2>Connect This Site</h2>';
-            echo '<p>Register this WordPress site with your Baseline API to enable checks and white-label controls.</p>';
-            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-            echo '<input type="hidden" name="action" value="baseline_register_site" />';
-            wp_nonce_field('baseline_register_site');
-            submit_button('Register Site');
-            echo '</form>';
+            echo '<h2>Activate This Site</h2>';
+            echo '<p>Enter your Baseline license key and activate this website.</p>';
+            $this->render_license_activation_form();
             echo '</div>';
             echo '</div>';
             return;
@@ -503,7 +566,7 @@ class Baseline_Admin
         echo '<h2>Connection</h2>';
         echo '<ul class="baseline-kv-list">';
         echo '<li><span>Site ID</span><code>' . esc_html($siteId) . '</code></li>';
-        echo '<li><span>Tenant ID</span><code>' . esc_html($this->get_option(self::OPTION_TENANT_ID)) . '</code></li>';
+        echo '<li><span>License Key</span><code>' . esc_html($this->mask_license_key($this->get_option(self::OPTION_LICENSE_KEY))) . '</code></li>';
         echo '<li><span>API Base</span><code>' . esc_html($this->get_api_base()) . '</code></li>';
         echo '</ul>';
         echo '<div class="baseline-actions"><a class="button button-primary" href="' . esc_url(admin_url('admin.php?page=baseline-scan')) . '">Open Scan Workspace</a></div>';
@@ -523,19 +586,23 @@ class Baseline_Admin
             $scansUsed = (int) ($data['scans_used'] ?? 0);
             $scansLimit = (int) ($data['scans_limit'] ?? 0);
             $usagePercent = $scansLimit > 0 ? (int) max(0, min(100, round(($scansUsed / $scansLimit) * 100))) : 0;
+            $scansDisplay = $scansLimit > 0 ? ((string) $scansUsed . ' / ' . (string) $scansLimit) : ((string) $scansUsed . ' / Unlimited');
+            $sitesLimitLabel = (int) ($data['sites_limit'] ?? 0) > 0 ? (string) ((int) ($data['sites_limit'] ?? 0)) : 'Unlimited';
 
             echo '<ul class="baseline-kv-list">';
-            echo '<li><span>Period</span><strong>' . esc_html((string) ($data['period_key'] ?? 'n/a')) . '</strong></li>';
+            echo '<li><span>Period</span><strong>' . esc_html((string) ($data['period_start'] ?? 'n/a')) . '</strong></li>';
             echo '<li><span>Plan</span><strong>' . esc_html($planId) . ' <span class="baseline-inline-muted">(' . esc_html($billingStatus) . ')</span></strong></li>';
-            echo '<li><span>Scans</span><strong>' . esc_html((string) $scansUsed) . ' / ' . esc_html((string) $scansLimit) . '</strong></li>';
-            echo '<li><span>Sites Limit</span><strong>' . esc_html((string) ($data['sites_limit'] ?? 0)) . '</strong></li>';
+            echo '<li><span>Scans</span><strong>' . esc_html($scansDisplay) . '</strong></li>';
+            echo '<li><span>Sites Limit</span><strong>' . esc_html($sitesLimitLabel) . '</strong></li>';
             echo '<li><span>Client PDF</span><strong>' . (!empty($data['pdf_export']) ? 'Included' : 'Not included') . '</strong></li>';
             echo '<li><span>Evidence ZIP</span><strong>' . (!empty($data['zip_export']) ? 'Included' : 'Not included') . '</strong></li>';
             echo '<li><span>White-label</span><strong>' . (!empty($data['whitelabel']) ? 'Included' : 'Not included') . '</strong></li>';
             echo '</ul>';
-            echo '<div class="baseline-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $usagePercent) . '">';
-            echo '<span style="width:' . esc_attr((string) $usagePercent) . '%"></span>';
-            echo '</div>';
+            if ($scansLimit > 0) {
+                echo '<div class="baseline-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $usagePercent) . '">';
+                echo '<span style="width:' . esc_attr((string) $usagePercent) . '%"></span>';
+                echo '</div>';
+            }
             echo '<div class="baseline-actions"><a class="button" href="' . esc_url(admin_url('admin.php?page=baseline-billing')) . '">Manage Billing</a></div>';
         }
         echo '</div>';
@@ -554,28 +621,19 @@ class Baseline_Admin
         $siteHost = wp_parse_url(home_url('/'), PHP_URL_HOST);
 
         echo '<div class="wrap baseline-wrap baseline-scan-page">';
-        echo '<div class="baseline-page-header">';
-        echo '<div class="baseline-page-title">';
-        echo '<h1>Scan</h1>';
-        echo '<p class="baseline-page-subtitle">Configure and run site scans with live tracking.</p>';
-        echo '</div>';
-        echo '<div class="baseline-page-meta">';
-        echo '<span class="baseline-badge ' . ($connected ? 'is-success' : 'is-warning') . '">' . ($connected ? 'Connected' : 'Not Connected') . '</span>';
+        $headerBadges = [
+            ['text' => $connected ? 'Connected' : 'Not Connected', 'variant' => $connected ? 'success' : 'warning']
+        ];
         if (!empty($siteHost)) {
-            echo '<span class="baseline-badge">' . esc_html((string) $siteHost) . '</span>';
+            $headerBadges[] = ['text' => (string) $siteHost];
         }
-        echo '</div>';
-        echo '</div>';
+        $this->render_brand_header('Scan', 'Configure and run site scans with live tracking.', $headerBadges);
 
         if (!$connected) {
             echo '<div class="baseline-card baseline-card-hero">';
-            echo '<h2>Connect This Site</h2>';
-            echo '<p>Register this WordPress site with your Baseline API to enable checks and white-label controls.</p>';
-            echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
-            echo '<input type="hidden" name="action" value="baseline_register_site" />';
-            wp_nonce_field('baseline_register_site');
-            submit_button('Register Site');
-            echo '</form>';
+            echo '<h2>Activate This Site</h2>';
+            echo '<p>Enter your Baseline license key and activate this website.</p>';
+            $this->render_license_activation_form();
             echo '</div>';
             echo '</div>';
             return;
@@ -672,7 +730,7 @@ class Baseline_Admin
     {
         ?>
         <div class="wrap baseline-wrap">
-            <h1>Settings</h1>
+            <?php $this->render_brand_header('Settings', 'Configure API access and local activation details.'); ?>
             <form method="post" action="options.php">
                 <?php settings_fields('baseline_settings_group'); ?>
                 <table class="form-table" role="presentation">
@@ -681,16 +739,12 @@ class Baseline_Admin
                         <td><input class="regular-text" type="url" id="baseline_api_base_url" name="baseline_api_base_url" value="<?php echo esc_attr($this->get_option(self::OPTION_API_BASE, self::DEFAULT_API_BASE)); ?>" placeholder="https://baseline-api.your-subdomain.workers.dev" /></td>
                     </tr>
                     <tr>
-                        <th scope="row"><label for="baseline_site_token">Site Token</label></th>
-                        <td><input class="regular-text" type="text" id="baseline_site_token" name="baseline_site_token" value="<?php echo esc_attr($this->get_option(self::OPTION_SITE_TOKEN)); ?>" /></td>
+                        <th scope="row"><label for="baseline_license_key">License Key</label></th>
+                        <td><input class="regular-text" type="text" id="baseline_license_key" name="baseline_license_key" value="<?php echo esc_attr($this->get_option(self::OPTION_LICENSE_KEY)); ?>" /></td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="baseline_site_id">Site ID</label></th>
-                        <td><input class="regular-text" type="text" id="baseline_site_id" name="baseline_site_id" value="<?php echo esc_attr($this->get_option(self::OPTION_SITE_ID)); ?>" /></td>
-                    </tr>
-                    <tr>
-                        <th scope="row"><label for="baseline_tenant_id">Tenant ID</label></th>
-                        <td><input class="regular-text" type="text" id="baseline_tenant_id" name="baseline_tenant_id" value="<?php echo esc_attr($this->get_option(self::OPTION_TENANT_ID)); ?>" /></td>
+                        <td><input class="regular-text" type="text" id="baseline_site_id" name="baseline_site_id" value="<?php echo esc_attr($this->get_option(self::OPTION_SITE_ID)); ?>" readonly /></td>
                     </tr>
                     <tr>
                         <th scope="row"><label for="baseline_default_form_mode">Default Form Mode</label></th>
@@ -711,18 +765,27 @@ class Baseline_Admin
 
     public function render_billing(): void
     {
-        $siteId = $this->get_option(self::OPTION_SITE_ID);
+        $licenseKey = trim($this->get_option(self::OPTION_LICENSE_KEY));
 
         echo '<div class="wrap baseline-wrap">';
-        echo '<h1>Billing</h1>';
+        $this->render_brand_header('License & Plan', 'Manage plan limits, assigned domains, and key rotation.');
 
-        if ($siteId === '') {
-            echo '<p>Connect your site in Baseline Dashboard first.</p>';
+        if ($licenseKey === '') {
+            echo '<div class="baseline-card">';
+            echo '<p>Add your license key in Settings or activate this site from Dashboard first.</p>';
             echo '</div>';
             return;
         }
 
-        $response = $this->fetch_billing($siteId);
+        $sessionId = sanitize_text_field((string) wp_unslash($_GET['session_id'] ?? ''));
+        if ($sessionId !== '') {
+            $checkoutResult = $this->api_request('GET', '/v1/licenses/checkout-result?session_id=' . rawurlencode($sessionId), null, false);
+            if (is_wp_error($checkoutResult)) {
+                echo '<div class="notice notice-warning"><p>' . esc_html($checkoutResult->get_error_message()) . '</p></div>';
+            }
+        }
+
+        $response = $this->fetch_billing();
         if (is_wp_error($response)) {
             echo '<p>' . esc_html($response->get_error_message()) . '</p>';
             echo '</div>';
@@ -731,23 +794,75 @@ class Baseline_Admin
 
         $data = is_array($response['data'] ?? null) ? $response['data'] : [];
         $billing = is_array($data['billing'] ?? null) ? $data['billing'] : [];
+        $usage = is_array($data['usage'] ?? null) ? $data['usage'] : [];
         $plans = is_array($data['plans'] ?? null) ? $data['plans'] : [];
+        $sites = is_array($data['sites'] ?? null) ? $data['sites'] : [];
 
         $currentPlanId = sanitize_text_field((string) ($billing['plan_id'] ?? 'starter'));
-        $billingStatus = sanitize_text_field((string) ($billing['billing_status'] ?? 'trial'));
+        $billingStatus = sanitize_text_field((string) ($billing['billing_status'] ?? 'inactive'));
         $currentPeriodEnd = sanitize_text_field((string) ($billing['current_period_end'] ?? ''));
+        $currentPeriodStart = sanitize_text_field((string) ($billing['current_period_start'] ?? ''));
         $currentPlan = is_array($data['current_plan'] ?? null) ? $data['current_plan'] : [];
+        $scansUsed = (int) ($usage['scans_used'] ?? 0);
+        $scansLimit = (int) ($usage['scans_limit'] ?? 0);
+        $sitesUsed = (int) ($usage['sites_used'] ?? 0);
+        $sitesLimit = (int) ($usage['sites_limit'] ?? 0);
+        $usagePercent = $scansLimit > 0 ? (int) max(0, min(100, round(($scansUsed / $scansLimit) * 100))) : 0;
+        $scansDisplay = $scansLimit > 0
+            ? ((string) $scansUsed . ' / ' . (string) $scansLimit)
+            : ((string) $scansUsed . ' / Unlimited');
+        $sitesDisplay = $sitesLimit > 0
+            ? ((string) $sitesUsed . ' / ' . (string) $sitesLimit)
+            : ((string) $sitesUsed . ' / Unlimited');
 
         echo '<div class="baseline-card">';
         echo '<h2>Current Subscription</h2>';
+        echo '<p><strong>License:</strong> ' . esc_html($this->mask_license_key($licenseKey)) . '</p>';
         echo '<p><strong>Plan:</strong> ' . esc_html($currentPlanId) . '</p>';
         echo '<p><strong>Status:</strong> ' . esc_html($billingStatus) . '</p>';
+        if ($currentPeriodStart !== '') {
+            echo '<p><strong>Current Period Start:</strong> ' . esc_html($currentPeriodStart) . '</p>';
+        }
         if ($currentPeriodEnd !== '') {
             echo '<p><strong>Current Period End:</strong> ' . esc_html($currentPeriodEnd) . '</p>';
+        }
+        echo '<p><strong>Scans:</strong> ' . esc_html($scansDisplay) . '</p>';
+        echo '<p><strong>Sites:</strong> ' . esc_html($sitesDisplay) . '</p>';
+        if ($scansLimit > 0) {
+            echo '<div class="baseline-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' . esc_attr((string) $usagePercent) . '">';
+            echo '<span style="width:' . esc_attr((string) $usagePercent) . '%"></span>';
+            echo '</div>';
         }
         echo '<p><strong>Client PDF:</strong> ' . (!empty($currentPlan['pdf_export']) ? 'Included' : 'Not included') . '</p>';
         echo '<p><strong>Evidence ZIP:</strong> ' . (!empty($currentPlan['zip_export']) ? 'Included' : 'Not included') . '</p>';
         echo '<p><strong>White-label:</strong> ' . (!empty($currentPlan['whitelabel']) ? 'Included' : 'Not included') . '</p>';
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="baseline_rotate_license_key" />';
+        wp_nonce_field('baseline_rotate_license_key');
+        echo '<p><button class="button" type="submit">Rotate License Key</button></p>';
+        echo '</form>';
+        echo '</div>';
+
+        echo '<div class="baseline-card">';
+        echo '<h2>Assigned Sites</h2>';
+        if (empty($sites)) {
+            echo '<p>No active domains assigned yet.</p>';
+        } else {
+            echo '<ul class="baseline-kv-list">';
+            foreach ($sites as $siteRow) {
+                $domain = sanitize_text_field((string) ($siteRow['normalized_domain'] ?? ''));
+                echo '<li>';
+                echo '<span>' . esc_html($domain) . '</span>';
+                echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" style="display:inline">';
+                echo '<input type="hidden" name="action" value="baseline_remove_license_site" />';
+                echo '<input type="hidden" name="domain" value="' . esc_attr($domain) . '" />';
+                wp_nonce_field('baseline_remove_license_site');
+                echo '<button class="button" type="submit">Remove</button>';
+                echo '</form>';
+                echo '</li>';
+            }
+            echo '</ul>';
+        }
         echo '</div>';
 
         if (empty($plans)) {
@@ -761,6 +876,8 @@ class Baseline_Admin
             $planId = sanitize_text_field((string) ($plan['id'] ?? ''));
             $planScans = (int) ($plan['scans_limit'] ?? 0);
             $planSites = (int) ($plan['sites_limit'] ?? 0);
+            $planScansLabel = $planScans > 0 ? (string) $planScans : 'Unlimited';
+            $planSitesLabel = $planSites > 0 ? (string) $planSites : 'Unlimited';
             $planWhitelabel = !empty($plan['whitelabel']);
             $planPdf = !empty($plan['pdf_export']);
             $planZip = !empty($plan['zip_export']);
@@ -772,8 +889,8 @@ class Baseline_Admin
             if ($isCurrent) {
                 echo '<p><span class="baseline-pill">Current</span></p>';
             }
-            echo '<p><strong>Scans / month:</strong> ' . esc_html((string) $planScans) . '</p>';
-            echo '<p><strong>Sites:</strong> ' . esc_html((string) $planSites) . '</p>';
+            echo '<p><strong>Scans / month:</strong> ' . esc_html($planScansLabel) . '</p>';
+            echo '<p><strong>Sites:</strong> ' . esc_html($planSitesLabel) . '</p>';
             echo '<p><strong>Client PDF:</strong> ' . esc_html($planPdf ? 'Included' : 'No') . '</p>';
             echo '<p><strong>Evidence ZIP:</strong> ' . esc_html($planZip ? 'Included' : 'No') . '</p>';
             echo '<p><strong>White-label:</strong> ' . esc_html($planWhitelabel ? 'Included' : 'No') . '</p>';
@@ -798,44 +915,39 @@ class Baseline_Admin
         echo '</div>';
     }
 
-    public function handle_register_site(): void
+    public function handle_activate_site(): void
     {
-        $this->ensure_admin_post('baseline_register_site');
-        $lockKey = $this->registration_lock_key();
-        if (get_transient($lockKey)) {
-            $this->redirect_with_notice('baseline-dashboard', 'error', 'Site registration is already in progress. Please wait a few seconds and retry.');
+        $this->ensure_admin_post('baseline_activate_site');
+
+        $licenseKey = sanitize_text_field((string) wp_unslash($_POST['license_key'] ?? $this->get_option(self::OPTION_LICENSE_KEY)));
+        if ($licenseKey === '') {
+            $this->redirect_with_notice('baseline-dashboard', 'error', 'License key is required.');
         }
-        set_transient($lockKey, '1', 30);
 
         $payload = [
+            'license_key' => $licenseKey,
             'site_url' => home_url('/'),
-            'tenant_id' => 'tenant-' . substr(md5(home_url('/')), 0, 12),
-            'tenant_name' => get_bloginfo('name'),
-            'plan_id' => 'starter',
             'wp_version' => get_bloginfo('version'),
             'php_version' => PHP_VERSION,
             'plugin_version' => BASELINE_VERSION,
             'timezone' => wp_timezone_string() ?: 'UTC'
         ];
 
-        $response = $this->api_request('POST', '/v1/sites/register', $payload, false);
+        $response = $this->api_request('POST', '/v1/licenses/activate-site', $payload, false);
         if (is_wp_error($response)) {
-            delete_transient($lockKey);
             $this->redirect_with_notice('baseline-dashboard', 'error', $response->get_error_message());
         }
 
         $data = $response['data'];
         if (empty($data['site_id']) || empty($data['site_token'])) {
-            delete_transient($lockKey);
-            $this->redirect_with_notice('baseline-dashboard', 'error', 'Site registration response missing required fields.');
+            $this->redirect_with_notice('baseline-dashboard', 'error', 'Site activation response missing required fields.');
         }
 
+        update_option(self::OPTION_LICENSE_KEY, $licenseKey);
         update_option(self::OPTION_SITE_ID, sanitize_text_field((string) $data['site_id']));
         update_option(self::OPTION_SITE_TOKEN, sanitize_text_field((string) $data['site_token']));
-        update_option(self::OPTION_TENANT_ID, sanitize_text_field((string) ($data['tenant_id'] ?? '')));
 
-        delete_transient($lockKey);
-        $this->redirect_with_notice('baseline-dashboard', 'success', 'Site registered successfully.');
+        $this->redirect_with_notice('baseline-dashboard', 'success', 'Site activated successfully.');
     }
 
     public function handle_run_scan(): void
@@ -991,13 +1103,8 @@ class Baseline_Admin
     {
         $this->ensure_admin_post('baseline_start_checkout');
 
-        $siteId = $this->get_option(self::OPTION_SITE_ID);
-        if ($siteId === '') {
-            $this->redirect_with_notice('baseline-billing', 'error', 'Connect the site before starting checkout.');
-        }
-
         $planId = sanitize_key((string) wp_unslash($_POST['plan_id'] ?? ''));
-        if (!in_array($planId, ['starter', 'growth', 'agency'], true)) {
+        if (!in_array($planId, ['starter', 'pro', 'agency'], true)) {
             $this->redirect_with_notice('baseline-billing', 'error', 'Invalid plan selected.');
         }
 
@@ -1005,7 +1112,8 @@ class Baseline_Admin
             [
                 'page' => 'baseline-billing',
                 'baseline_notice' => 'success',
-                'baseline_message' => 'Checkout complete. Billing status may take up to 60 seconds to refresh.'
+                'baseline_message' => 'Checkout complete. Billing status may take up to 60 seconds to refresh.',
+                'session_id' => '{CHECKOUT_SESSION_ID}'
             ],
             admin_url('admin.php')
         );
@@ -1022,12 +1130,19 @@ class Baseline_Admin
         $payload = [
             'plan_id' => $planId,
             'success_url' => $successUrl,
-            'cancel_url' => $cancelUrl
+            'cancel_url' => $cancelUrl,
+            'license_key' => $this->get_option(self::OPTION_LICENSE_KEY),
+            'customer_email' => get_option('admin_email')
         ];
 
-        $response = $this->api_request('POST', '/v1/sites/' . rawurlencode($siteId) . '/billing/checkout-session', $payload);
+        $response = $this->api_request('POST', '/v1/licenses/checkout-session', $payload, false, true);
         if (is_wp_error($response)) {
             $this->redirect_with_notice('baseline-billing', 'error', $response->get_error_message());
+        }
+
+        $issuedKey = sanitize_text_field((string) ($response['data']['license_key'] ?? ''));
+        if ($issuedKey !== '') {
+            update_option(self::OPTION_LICENSE_KEY, $issuedKey);
         }
 
         $checkoutUrl = esc_url_raw((string) ($response['data']['checkout_url'] ?? ''));
@@ -1037,6 +1152,49 @@ class Baseline_Admin
 
         wp_redirect($checkoutUrl);
         exit;
+    }
+
+    public function handle_remove_license_site(): void
+    {
+        $this->ensure_admin_post('baseline_remove_license_site');
+        $domain = sanitize_text_field((string) wp_unslash($_POST['domain'] ?? ''));
+        if ($domain === '') {
+            $this->redirect_with_notice('baseline-billing', 'error', 'Domain is required.');
+        }
+
+        $payload = [
+            'license_key' => $this->get_option(self::OPTION_LICENSE_KEY),
+            'domain' => $domain
+        ];
+        $response = $this->api_request('POST', '/v1/licenses/sites/remove', $payload, false, true);
+        if (is_wp_error($response)) {
+            $this->redirect_with_notice('baseline-billing', 'error', $response->get_error_message());
+        }
+
+        $removedDomain = $this->normalize_domain_for_matching($domain);
+        $currentDomain = $this->normalize_domain_for_matching((string) home_url('/'));
+        if ($removedDomain !== '' && $currentDomain !== '' && $removedDomain === $currentDomain) {
+            update_option(self::OPTION_SITE_ID, '');
+            update_option(self::OPTION_SITE_TOKEN, '');
+        }
+
+        $this->redirect_with_notice('baseline-billing', 'success', 'Site removed from license.');
+    }
+
+    public function handle_rotate_license_key(): void
+    {
+        $this->ensure_admin_post('baseline_rotate_license_key');
+        $payload = ['license_key' => $this->get_option(self::OPTION_LICENSE_KEY)];
+        $response = $this->api_request('POST', '/v1/licenses/rotate-key', $payload, false, true);
+        if (is_wp_error($response)) {
+            $this->redirect_with_notice('baseline-billing', 'error', $response->get_error_message());
+        }
+
+        $newKey = sanitize_text_field((string) ($response['data']['license_key'] ?? ''));
+        if ($newKey !== '') {
+            update_option(self::OPTION_LICENSE_KEY, $newKey);
+        }
+        $this->redirect_with_notice('baseline-billing', 'success', 'License key rotated.');
     }
 
     public function handle_poll_scan(): void
@@ -1148,11 +1306,6 @@ class Baseline_Admin
         check_admin_referer($action);
     }
 
-    private function registration_lock_key(): string
-    {
-        return 'baseline_register_lock_' . get_current_blog_id();
-    }
-
     private function get_api_base(): string
     {
         $configured = trim($this->get_option(self::OPTION_API_BASE, self::DEFAULT_API_BASE));
@@ -1190,14 +1343,17 @@ class Baseline_Admin
         $currentUrl = esc_url_raw((string) ($progress['current_url'] ?? ($summary['current_url'] ?? '')));
         $lastUpdateAt = sanitize_text_field((string) ($progress['last_update_at'] ?? ($summary['callback_received_at'] ?? '')));
 
-        $percent = null;
+        $percentCandidates = [];
         if ($percentFromObject !== null) {
-            $percent = $this->clamp_progress($percentFromObject);
-        } elseif ($percentFromTop !== null) {
-            $percent = $this->clamp_progress($percentFromTop);
-        } elseif ($totalUrls > 0 && $completedUrls >= 0) {
-            $percent = $this->clamp_progress((int) round(($completedUrls / $totalUrls) * 100));
+            $percentCandidates[] = $percentFromObject;
         }
+        if ($percentFromTop !== null) {
+            $percentCandidates[] = $percentFromTop;
+        }
+        if ($totalUrls > 0 && $completedUrls >= 0) {
+            $percentCandidates[] = (int) round(($completedUrls / $totalUrls) * 100);
+        }
+        $percent = $percentCandidates ? $this->clamp_progress((int) max($percentCandidates)) : null;
 
         return [
             'percent' => $percent,
@@ -1840,24 +1996,28 @@ class Baseline_Admin
         echo '<button type="button" class="button-link" data-baseline-modal-close="1" aria-label="Close">Close</button>';
         echo '</div>';
         echo '<div class="baseline-modal__body">';
-        echo '<div class="baseline-modal__meta"><strong>Scan ID:</strong> <code id="baseline-modal-scan-id">' . esc_html($scanId) . '</code></div>';
-        echo '<div class="baseline-modal__meta"><strong>Status:</strong> <span id="baseline-modal-status">queued</span></div>';
-        echo '<div class="baseline-modal__meta"><strong>Progress:</strong> <span id="baseline-modal-progress-text">0%</span></div>';
+        echo '<div class="baseline-modal__meta-grid">';
+        echo '<div class="baseline-modal__meta-item baseline-modal__meta-item--scan"><span class="baseline-modal__label">Scan ID</span><code id="baseline-modal-scan-id">' . esc_html($scanId) . '</code></div>';
+        echo '<div class="baseline-modal__meta-item baseline-modal__meta-item--status"><span id="baseline-modal-status-pill" class="baseline-status-pill status-queued"><span id="baseline-modal-status">queued</span></span></div>';
+        echo '<div class="baseline-modal__meta-item baseline-modal__meta-item--elapsed"><span class="baseline-modal__label">Elapsed</span><strong id="baseline-modal-elapsed">--</strong></div>';
+        echo '</div>';
+        echo '<div class="baseline-modal__progress-head">';
+        echo '<strong id="baseline-modal-progress-text">0%</strong>';
+        echo '<span id="baseline-modal-eta-text">Preparing scan telemetry...</span>';
+        echo '</div>';
         echo '<div class="baseline-progress baseline-modal__progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">';
         echo '<span id="baseline-modal-progress-bar" style="width:0%"></span>';
         echo '</div>';
-        echo '<div class="baseline-modal__ticker"><strong>Current URL:</strong> <code id="baseline-modal-current-url">Waiting for live scan telemetry...</code></div>';
-        echo '<div class="baseline-modal__ticker"><strong>Elapsed:</strong> <span id="baseline-modal-elapsed">--</span></div>';
-        echo '<div class="baseline-modal__ticker" id="baseline-modal-status-message">Scan is queued.</div>';
-        echo '<div class="baseline-modal__ticker"><strong>QA tip:</strong> <span id="baseline-modal-tip-text">Checking forms and broken links first usually finds the highest-impact conversion issues.</span></div>';
-        echo '<div class="baseline-modal__ticker muted" id="baseline-modal-eta-text"></div>';
+        echo '<div class="baseline-modal__current-url"><span class="baseline-modal__label">Current URL</span><code id="baseline-modal-current-url">Waiting for live scan telemetry...</code></div>';
+        echo '<p class="baseline-modal__status-message" id="baseline-modal-status-message">Scan is queued.</p>';
+        echo '<p class="baseline-modal__tip"><strong>QA tip:</strong> <span id="baseline-modal-tip-text">Checking forms and broken links first usually finds the highest-impact conversion issues.</span></p>';
         echo '</div>';
         echo '<div class="baseline-modal__footer">';
-        echo '<a id="baseline-modal-view-report" class="button button-primary" href="#" target="_blank" rel="noopener" aria-disabled="true">View Report</a>';
-        echo '<a id="baseline-modal-open-workflow" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">Open GitHub Run</a>';
-        echo '<a id="baseline-modal-download-artifact" class="button" href="#" target="_blank" rel="noopener" aria-disabled="true">Download Report ZIP</a>';
-        echo '<a id="baseline-modal-last-report" class="button" href="' . esc_url($lastCompletedReportUrl !== '' ? $lastCompletedReportUrl : '#') . '" target="_blank" rel="noopener" aria-disabled="' . ($lastCompletedReportUrl !== '' ? 'false' : 'true') . '">View Last Completed Report</a>';
-        echo '<button type="button" id="baseline-modal-retry-safe" class="button">Retry Safe Scan</button>';
+        echo '<a id="baseline-modal-view-report" class="button button-primary is-hidden" data-hide-unavailable="1" href="#" target="_blank" rel="noopener" aria-disabled="true">View Report</a>';
+        echo '<a id="baseline-modal-open-workflow" class="button is-hidden" data-hide-unavailable="1" href="#" target="_blank" rel="noopener" aria-disabled="true">Open GitHub Run</a>';
+        echo '<a id="baseline-modal-download-artifact" class="button is-hidden" data-hide-unavailable="1" href="#" target="_blank" rel="noopener" aria-disabled="true">Download Report ZIP</a>';
+        echo '<a id="baseline-modal-last-report" class="button' . ($lastCompletedReportUrl !== '' ? '' : ' is-hidden') . '" data-hide-unavailable="1" href="' . esc_url($lastCompletedReportUrl !== '' ? $lastCompletedReportUrl : '#') . '" target="_blank" rel="noopener" aria-disabled="' . ($lastCompletedReportUrl !== '' ? 'false' : 'true') . '">View Last Completed Report</a>';
+        echo '<button type="button" id="baseline-modal-retry-safe" class="button is-hidden">Retry Safe Scan</button>';
         echo '<button type="button" id="baseline-modal-stop" class="button">Stop Scan</button>';
         echo '<button type="button" class="button" data-baseline-modal-close="1">Close</button>';
         echo '</div>';
@@ -1880,6 +2040,69 @@ class Baseline_Admin
         return ' <span class="dashicons dashicons-editor-help baseline-help-tip" title="' . esc_attr($text) . '" aria-label="' . esc_attr($text) . '"></span>';
     }
 
+    private function mask_license_key(string $value): string
+    {
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return '';
+        }
+        if (strlen($trimmed) <= 10) {
+            return $trimmed;
+        }
+        return substr($trimmed, 0, 10) . '...';
+    }
+
+    private function normalize_domain_for_matching(string $value): string
+    {
+        $candidate = trim($value);
+        if ($candidate === '') {
+            return '';
+        }
+
+        $parsed = wp_parse_url($candidate);
+        if (!is_array($parsed) || empty($parsed['host'])) {
+            $parsed = wp_parse_url('https://' . ltrim($candidate, '/'));
+        }
+        if (!is_array($parsed)) {
+            return '';
+        }
+
+        $host = strtolower((string) ($parsed['host'] ?? ''));
+        $host = preg_replace('/\.+$/', '', $host);
+        $host = preg_replace('/^www\./', '', $host);
+        $host = trim((string) $host);
+        if ($host === '') {
+            return '';
+        }
+
+        $labels = array_values(array_filter(explode('.', $host), static function ($label): bool {
+            return $label !== '';
+        }));
+        if (count($labels) <= 2) {
+            return implode('.', $labels);
+        }
+
+        $secondLevelSet = ['co', 'com', 'org', 'net', 'gov', 'ac', 'edu'];
+        $tld = (string) end($labels);
+        $sld = (string) prev($labels);
+        if (strlen($tld) === 2 && in_array($sld, $secondLevelSet, true) && count($labels) >= 3) {
+            return implode('.', array_slice($labels, -3));
+        }
+
+        return implode('.', array_slice($labels, -2));
+    }
+
+    private function render_license_activation_form(): void
+    {
+        echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '">';
+        echo '<input type="hidden" name="action" value="baseline_activate_site" />';
+        wp_nonce_field('baseline_activate_site');
+        echo '<p><label for="baseline_activate_license_key"><strong>License Key</strong></label><br />';
+        echo '<input class="regular-text" type="text" id="baseline_activate_license_key" name="license_key" value="' . esc_attr($this->get_option(self::OPTION_LICENSE_KEY)) . '" /></p>';
+        submit_button('Activate Site');
+        echo '</form>';
+    }
+
     private function render_scan_form_script(): void
     {
         $scriptPath = BASELINE_PLUGIN_DIR . 'assets/js/admin-scan.js';
@@ -1887,7 +2110,13 @@ class Baseline_Admin
         wp_enqueue_script('baseline-admin-scan', BASELINE_PLUGIN_URL . 'assets/js/admin-scan.js', [], $scriptVersion, true);
     }
 
-    private function api_request(string $method, string $path, ?array $body = null, bool $includeSiteToken = true)
+    private function api_request(
+        string $method,
+        string $path,
+        ?array $body = null,
+        bool $includeSiteToken = true,
+        bool $includeLicenseKey = false
+    )
     {
         $base = $this->get_api_base();
         if ($base === '') {
@@ -1900,11 +2129,18 @@ class Baseline_Admin
         if ($includeSiteToken) {
             $siteToken = trim($this->get_option(self::OPTION_SITE_TOKEN));
             if ($siteToken !== '') {
-                // Send all accepted auth headers for backward compatibility.
-                $headers['x-launchguard-site-token'] = $siteToken;
-                $headers['x-site-token'] = $siteToken;
-                $headers['Authorization'] = 'Bearer ' . $siteToken;
                 $headers['x-baseline-site-token'] = $siteToken;
+                $headers['Authorization'] = 'Bearer ' . $siteToken;
+            }
+        }
+
+        if ($includeLicenseKey) {
+            $licenseKey = trim($this->get_option(self::OPTION_LICENSE_KEY));
+            if ($licenseKey !== '') {
+                $headers['x-baseline-license-key'] = $licenseKey;
+                if (!$includeSiteToken) {
+                    $headers['Authorization'] = 'Bearer ' . $licenseKey;
+                }
             }
         }
 
@@ -1949,9 +2185,9 @@ class Baseline_Admin
         return $this->api_request('GET', '/v1/sites/' . rawurlencode($siteId) . '/limits');
     }
 
-    private function fetch_billing(string $siteId)
+    private function fetch_billing()
     {
-        return $this->api_request('GET', '/v1/sites/' . rawurlencode($siteId) . '/billing');
+        return $this->api_request('GET', '/v1/licenses/overview', null, false, true);
     }
 
     private function extract_plan_features($response): array
@@ -2026,7 +2262,11 @@ class Baseline_Admin
     {
         $progressSnapshot = $this->extract_progress_snapshot($summary);
         if ($progressSnapshot['percent'] !== null) {
-            return $this->clamp_progress((int) $progressSnapshot['percent']);
+            $resolved = $this->clamp_progress((int) $progressSnapshot['percent']);
+            if ($this->is_scan_in_progress($status) && $resolved >= 100) {
+                return 99;
+            }
+            return $resolved;
         }
 
         if ($status === 'completed') {
@@ -2199,6 +2439,9 @@ class Baseline_Admin
         }
         if (strpos($normalized, 'concurrent_scan_limit_exceeded') !== false) {
             return 'Another scan is already running. Wait for it to complete or stop it, then retry.';
+        }
+        if (strpos($normalized, 'scan_already_running') !== false) {
+            return 'A scan is already active for this site. Open Scan workspace to track/stop it before starting a new one.';
         }
         if (strpos($normalized, 'unauthorized') !== false || strpos($normalized, 'forbidden') !== false) {
             return 'Authentication failed. Reconnect your site token in Baseline Settings and retry.';
