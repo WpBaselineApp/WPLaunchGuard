@@ -5,6 +5,31 @@ const { resolveClientReportsDir, resolveRunRoot, validateClientId } = require('.
 const { safeHtml } = require('../scripts/lib/html-utils');
 const { parseCSV } = require('../scripts/lib/csv-utils');
 
+const DEFAULT_BASELINE_ICON_PATH = path.join(__dirname, '..', 'wordpress-plugin', 'baseline', 'assets', 'images', 'baseline-icon.svg');
+let cachedBaselineIconDataUrl = null;
+
+function getDefaultBaselineIconDataUrl() {
+  if (cachedBaselineIconDataUrl !== null) {
+    return cachedBaselineIconDataUrl;
+  }
+  try {
+    const svgRaw = fs.readFileSync(DEFAULT_BASELINE_ICON_PATH, 'utf8');
+    const svgCompact = String(svgRaw || '')
+      .replace(/\r?\n/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    if (!svgCompact) {
+      cachedBaselineIconDataUrl = '';
+      return cachedBaselineIconDataUrl;
+    }
+    cachedBaselineIconDataUrl = `data:image/svg+xml;base64,${Buffer.from(svgCompact, 'utf8').toString('base64')}`;
+    return cachedBaselineIconDataUrl;
+  } catch (error) {
+    cachedBaselineIconDataUrl = '';
+    return cachedBaselineIconDataUrl;
+  }
+}
+
 function toBool(value) {
   if (typeof value === 'boolean') return value;
   if (typeof value === 'number') return value === 1;
@@ -161,12 +186,13 @@ function buildPdfBranding() {
   const hideBaselineBranding = toBool(process.env.REPORT_HIDE_BASELINE_BRANDING);
   const useCustomBrand = hideBaselineBranding && brandName.length > 0;
   const reportDisplayName = useCustomBrand ? brandName : 'Baseline';
+  const defaultLogoUrl = getDefaultBaselineIconDataUrl();
   const reportLogoText = useCustomBrand ? String(brandName[0] || 'B').toUpperCase() : 'B';
 
   return {
     reportDisplayName,
     reportLogoText,
-    logoUrl: useCustomBrand ? brandLogoUrl : '',
+    logoUrl: useCustomBrand ? brandLogoUrl : defaultLogoUrl,
     primaryColor: brandPrimaryColor,
     accentColor: brandAccentColor,
     footerText: brandFooterText

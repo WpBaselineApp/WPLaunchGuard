@@ -69,7 +69,7 @@ test('pdf branding defaults to Baseline when client branding is not enabled', ()
   const branding = buildPdfBranding();
 
   assert.equal(branding.reportDisplayName, 'Baseline');
-  assert.equal(branding.logoUrl, '');
+  assert.match(branding.logoUrl, /^data:image\/svg\+xml;base64,/);
 });
 
 test('pdf branding switches to client brand when hide baseline branding is enabled', () => {
